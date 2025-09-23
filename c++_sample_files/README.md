@@ -15,23 +15,21 @@ pip install pybind11
 ```
 
 ## Setting up the C++ Agent
-
+Run the following commands in the root folder
 ```sh
-mkdir build && cd build
-cmake .. -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) \
- -DCMAKE_C_COMPILER=gcc \
- -DCMAKE_CXX_COMPILER=g++
+chmod +x compile.sh
+./compile.sh
 ```
 Run:
 
 ```sh
-make
 cd ..
 ```
 
 ## Running for a C++ program.
 
 You need to use student_cpp rather than student for this case.
+go to the /client_server and then run the following command
 
 ```sh
 python gameEngine.py --mode aivai --circle random --square student_cpp
