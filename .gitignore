@@ -1,2 +1,4 @@
 __pycache__/
 myenv/
+c++_sample_files/build/
+client_server/build/

@@ -79,7 +79,7 @@ class StudentAgent(BaseAgent):
                     # Unknown object — treat as empty
                     out_row.append({})
             board_for_cpp.append(out_row)
-        print(board_for_cpp)
+        # print(board_for_cpp)
 
         cpp_move = self.agent.choose(
             board_for_cpp,
