@@ -55,54 +55,7 @@ public:
 
         std::vector<Move> moves = generate_all_possible_moves(board, side, score_cols, score_cols);
 
-        // // Directions
-        // std::vector<std::pair<int,int>> dirs = {{1,0},{-1,0},{0,1},{0,-1}};
-
-        // // Iterate over board
-        // for (int y = 0; y < rows; y++) {
-        //     for (int x = 0; x < cols; x++) {
-        //         const auto &cell = board[y][x];
-        //         if (cell.empty()) continue;
-
-        //         if (cell.at("owner") != side) continue; // only my pieces
-
-        //         std::string side_type = cell.at("side");
-
-        //         // ---- MOVES ----
-        //         for (auto [dx,dy] : dirs) {
-        //             int nx = x+dx, ny = y+dy;
-        //             if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
-
-        //             if (board[ny][nx].empty()) {
-        //                 moves.push_back({"move", {x,y}, {nx,ny}, {}, ""});
-        //             }
-        //         }
-
-        //         // ---- PUSHES ----
-        //         for (auto [dx,dy] : dirs) {
-        //             int nx = x+dx, ny = y+dy;
-        //             int nx2 = x+2*dx, ny2 = y+2*dy;
-        //             if (nx<0||ny<0||nx>=cols||ny>=rows) continue;
-        //             if (nx2<0||ny2<0||nx2>=cols||ny2>=rows) continue;
-
-        //             if (!board[ny][nx].empty() && board[ny][nx].at("owner") != side
-        //                 && board[ny2][nx2].empty()) {
-        //                 moves.push_back({"push", {x,y}, {nx,ny}, {nx2,ny2}, ""});
-        //             }
-        //         }
-
-        //         // ---- FLIP ----
-        //         if (side_type == "stone") {
-        //             moves.push_back({"flip", {x,y}, {x,y}, {}, "horizontal"});
-        //             moves.push_back({"flip", {x,y}, {x,y}, {}, "vertical"});
-        //         }
-
-        //         // ---- ROTATE ----
-        //         if (side_type == "river") {
-        //             moves.push_back({"rotate", {x,y}, {x,y}, {}, ""});
-        //         }
-        //     }
-        // }
+        
 
         if (moves.empty()) {
             return {"move", {0,0}, {0,0}, {}, ""}; // fallback
@@ -126,6 +79,32 @@ private:
         auto it = m.find(k); return it==m.end()? def : it->second;
     }
 
+    static bool in_bounds(const std::vector<std::vector<std::map<std::string, std::string>>>& b, int x, int y) {
+        const int rows = (int)b.size();
+        const int cols = rows ? (int)b[0].size() : 0;
+        return x >= 0 && x < cols && y >= 0 && y < rows;
+    }
+    static inline bool empty_cell(const std::vector<std::vector<std::map<std::string, std::string>>>& b, int x, int y) {
+        return in_bounds(b, x, y) && b[y][x].empty();
+    }
+    static std::string side_at(const std::vector<std::vector<std::map<std::string, std::string>>>& board,int x,int y) {
+        if (!in_bounds(board,x,y) || board[y][x].empty()) return "";
+        return get(board[y][x], "side");
+    };
+    static std::string owner_at(const std::vector<std::vector<std::map<std::string, std::string>>>& board,int x,int y) {
+        if (!in_bounds(board,x,y) || board[y][x].empty()) return "";
+        return get(board[y][x], "owner");
+    };
+    static std::string orient_at(const std::vector<std::vector<std::map<std::string, std::string>>>& board,int x,int y) {
+        if (!in_bounds(board,x,y) || board[y][x].empty()) return "";
+        return get(board[y][x], "orientation");
+    };
+    static bool is_river(const std::vector<std::vector<std::map<std::string, std::string>>>& b, int x, int y) { return side_at(b,x,y) == "river"; }
+    static bool is_stone(const std::vector<std::vector<std::map<std::string, std::string>>>& b, int x, int y) { return side_at(b,x,y) == "stone"; }
+
+    static bool is_opp_score_col(int x, const std::vector<int>& cols) {
+        return std::find(cols.begin(), cols.end(), x) != cols.end();
+    }
 
     // ---- Generate all legal moves for `my_side` ----
     // board[y][x] cell schema:
@@ -149,34 +128,13 @@ private:
         const int cols = rows ? (int)board[0].size() : 0;
         if (rows == 0 || cols == 0) return moves;
 
-        auto in_bounds = [&](int x,int y){ return x>=0 && x<cols && y>=0 && y<rows; };
-        auto empty_cell = [&](int x,int y){ return in_bounds(x,y) && board[y][x].empty(); };
-        auto side_at = [&](int x,int y)->std::string {
-            if (!in_bounds(x,y) || board[y][x].empty()) return "";
-            return get(board[y][x], "side");
-        };
-        auto owner_at = [&](int x,int y)->std::string {
-            if (!in_bounds(x,y) || board[y][x].empty()) return "";
-            return get(board[y][x], "owner");
-        };
-        auto orient_at = [&](int x,int y)->std::string {
-            if (!in_bounds(x,y) || board[y][x].empty()) return "";
-            return get(board[y][x], "orientation");
-        };
-        auto is_river = [&](int x,int y){ return side_at(x,y) == "river"; };
-        auto is_stone = [&](int x,int y){ return side_at(x,y) == "stone"; };
-
-        auto is_opp_score_col = [&](int x)->bool {
-            return std::find(opp_score_cols.begin(), opp_score_cols.end(), x) != opp_score_cols.end();
-        };
-
         // Directions (dx,dy)
         const std::pair<int,int> dirs[4] = {{1,0},{-1,0},{0,1},{0,-1}};
 
         // Whether a direction aligns with a river cell's orientation
         auto aligns_with_river = [&](int x,int y, int dx,int dy)->bool {
-            if (!is_river(x,y)) return false;
-            std::string o = orient_at(x,y); // "horizontal" or "vertical"
+            if (!is_river(board,x,y)) return false;
+            std::string o = orient_at(board,x,y); // "horizontal" or "vertical"
             if (o == "horizontal") return (dy == 0 && dx != 0);
             if (o == "vertical")   return (dx == 0 && dy != 0);
             return false;
@@ -185,14 +143,14 @@ private:
         // Find the farthest empty landing for pushing a stone along a straight line (dx,dy)
         auto farthest_empty_in_line = [&](int start_x,int start_y, int dx,int dy)->std::pair<bool,std::pair<int,int>> {
             int x = start_x, y = start_y;
-            if (!in_bounds(x,y) || !empty_cell(x,y)) return {false, {0,0}};
+            if (!in_bounds(board,x,y) || !empty_cell(board,x,y)) return {false, {0,0}};
             // Walk forward collecting empties; we choose the furthest legal empty
             int last_ok_x = x, last_ok_y = y;
             while (true) {
-                if (is_opp_score_col(x)) break; // do not allow landing inside opponent score area
+                if (is_opp_score_col(x, opp_score_cols)) break; // do not allow landing inside opponent score area
                 last_ok_x = x; last_ok_y = y;
                 int nx = x + dx, ny = y + dy;
-                if (!in_bounds(nx,ny) || !empty_cell(nx,ny)) break;
+                if (!in_bounds(board,nx,ny) || !empty_cell(board,nx,ny)) break;
                 x = nx; y = ny;
             }
             return {true, {last_ok_x, last_ok_y}};
@@ -201,7 +159,7 @@ private:
         auto next_step_from_river = [&](int cx,int cy, int px,int py)->std::pair<bool,std::pair<int,int>> {
             // Given we're ON a river at (cx,cy) and we CAME FROM (px,py),
             // continue in the river's orientation AWAY from where we came.
-            std::string o = orient_at(cx,cy);
+            std::string o = orient_at(board,cx,cy);
             std::vector<std::pair<int,int>> outs;
             if(o == "horizontal") outs = {{-1,0},{+1,0}};
             else outs = {{0,-1},{0,+1}};
@@ -225,7 +183,7 @@ private:
         auto river_ride_chain = [&](int rx,int ry, int sx,int sy)
             -> std::pair<bool,std::pair<int,int>>
         {
-            if (!in_bounds(rx,ry) || !is_river(rx,ry) || is_opp_score_col(rx)) return {false, {0,0}};
+            if (!in_bounds(board,rx,ry) || !is_river(board,rx,ry) || is_opp_score_col(rx, opp_score_cols)) return {false, {0,0}};
 
             int px = sx, py = sy;     // previous (where we came from)
             int cx = rx, cy = ry;     // current river cell
@@ -237,27 +195,27 @@ private:
                 int nx = nxt.first, ny = nxt.second;
 
                 // If next is out of bounds: we STOP on current river cell
-                if (!in_bounds(nx,ny)) {
+                if (!in_bounds(board,nx,ny)) {
                     return {true, {cx,cy}};
                 }
 
                 // If next is opponent's scoring area
-                if (is_opp_score_col(nx)) {
+                if (is_opp_score_col(nx, opp_score_cols)) {
                     return {true, {cx,cy}};
                 }
 
                 // If next square has a STONE: we STOP on current river cell (cannot enter the stone)
-                if (!empty_cell(nx,ny) && is_stone(nx,ny)) {
+                if (!empty_cell(board,nx,ny) && is_stone(board,nx,ny)) {
                     return {true, {cx,cy}};
                 }
 
                 // If next square is EMPTY and NOT a river: that's our landing
-                if (empty_cell(nx,ny) && !is_river(nx,ny)) {
+                if (empty_cell(board,nx,ny) && !is_river(board,nx,ny)) {
                     return {true, {nx,ny}};
                 }
 
                 // If next square is a RIVER (mine or opponent's), we CONTINUE riding.
-                if (is_river(nx,ny)) {
+                if (is_river(board,nx,ny)) {
                     // current becomes previous, next becomes current
                     px = cx; py = cy;
                     cx = nx; cy = ny;
@@ -270,24 +228,24 @@ private:
         for (int y = 0; y < rows; ++y) {
             for (int x = 0; x < cols; ++x) {
                 if (board[y][x].empty()) continue;
-                if (owner_at(x,y) != my_side) continue;  // only generate my moves
+                if (owner_at(board,x,y) != my_side) continue;  // only generate my moves
 
-                const bool mine_is_stone = is_stone(x,y);
-                const bool mine_is_river = is_river(x,y);
+                const bool mine_is_stone = is_stone(board,x,y);
+                const bool mine_is_river = is_river(board,x,y);
 
                 // ---------- Basic 1-step moves into empty cell or ride in river direction ----------
                 for (auto [dx,dy] : dirs) {
                     int nx = x + dx, ny = y + dy;
-                    if (!in_bounds(nx,ny) || is_opp_score_col(nx)) continue;
+                    if (!in_bounds(board,nx,ny) || is_opp_score_col(nx, opp_score_cols)) continue;
 
                     // Case A: Adjacent is EMPTY and not a river
-                    if (empty_cell(nx,ny) && !is_river(nx,ny)) {
+                    if (empty_cell(board,nx,ny) && !is_river(board,nx,ny)) {
                         moves.push_back({"move", {x,y}, {nx,ny}, {}, ""});
                         continue;
                     }
 
                     // Case B: Adjacent is a RIVER
-                    if (is_river(nx,ny)) {
+                    if (is_river(board,nx,ny)) {
                         auto [ok, land] = river_ride_chain(nx,ny, x,y);
                         if (ok) {
                             moves.push_back({"move", {x,y}, {land.first, land.second}, {}, ""});
@@ -304,26 +262,26 @@ private:
                 //                to the farthest empty in that line (landing not in opp score cols).
                 for (auto [dx,dy] : dirs) {
                     int ax = x + dx, ay = y + dy;           // adjacent target piece
-                    if (!in_bounds(ax,ay)) continue;
+                    if (!in_bounds(board,ax,ay)) continue;
                     if (board[ay][ax].empty()) continue;     // nothing to push
 
-                    bool target_is_opp = owner_at(ax,ay) != "" && owner_at(ax,ay) != my_side;
+                    bool target_is_opp = owner_at(board,ax,ay) != "" && owner_at(board,ax,ay) != my_side;
                     if (!target_is_opp) continue;
 
                     // Stone push: 1 cell
                     int bx = ax + dx, by = ay + dy;         // landing for the pushed piece (1 step)
-                    if (in_bounds(bx,by) && empty_cell(bx,by) && !is_opp_score_col(bx)) {
+                    if (in_bounds(board,bx,by) && empty_cell(board,bx,by) && !is_opp_score_col(bx, opp_score_cols)) {
                         moves.push_back({"push", {x,y}, {ax,ay}, {bx,by}, ""});
                     }
 
                     // River push: multi-cell (only if my FROM is a river aligned with dx,dy AND target is a STONE)
-                    if (mine_is_river && aligns_with_river(x,y,dx,dy) && is_stone(ax,ay)) {
+                    if (mine_is_river && aligns_with_river(x,y,dx,dy) && is_stone(board,ax,ay)) {
                         // Find farthest empty cell for the pushed stone starting from (bx,by)
-                        if (in_bounds(bx,by) && empty_cell(bx,by)) {
+                        if (in_bounds(board,bx,by) && empty_cell(board,bx,by)) {
                             auto [ok, far] = farthest_empty_in_line(bx,by,dx,dy);
                             if (ok) {
                                 // far.first, far.second = final pushed landing
-                                if (!is_opp_score_col(far.first)) {
+                                if (!is_opp_score_col(far.first, opp_score_cols)) {
                                     moves.push_back({"push", {x,y}, {ax,ay}, {far.first, far.second}, ""});
                                 }
                             }
@@ -342,7 +300,7 @@ private:
 
                 // ---------- Rotation ----------
                 if (mine_is_river) {
-                    std::string current_orientation = orient_at(x, y);
+                    std::string current_orientation = orient_at(board,x, y);
                     std::string new_orientation = current_orientation == "horizontal" ? "vertical" : "horizontal";
                     moves.push_back({"rotate", {x,y}, {x,y}, {}, new_orientation});
                 }
@@ -351,6 +309,137 @@ private:
 
         return moves;
     }
+
+
+    // ---------------- EVALUATION FUNCTIONs   -------------------------------
+
+    // Count how many of `side`’s stones are already in its scoring columns
+    static int scoredCount(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        const std::string& side,
+        const std::vector<int>& score_cols
+    ) {
+        int count = 0;
+        for(int y=0;y < (int)board.size(); y++) {
+            for(int x=0;x < (int)board[0].size(); x++) {
+                if(empty_cell(board,x, y)) continue;
+                if(owner_at(board,x, y) == side && is_stone(board,x, y) && 
+                    std::find(score_cols.begin(), score_cols.end(), x) != score_cols.end())
+                        count++;
+            }
+        }
+        return count;
+    }
+
+    // Count how many stones of `side` can reach their scoring columns in ONE legal move
+    static int oneMoveReachables(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        const std::string& side,
+        const std::vector<int>& my_score_cols,
+        const std::vector<int>& opp_score_cols
+    ) {
+        int count = 0;
+        // TODO: we can cache the 1 moves from calling function
+        auto moves = generate_all_possible_moves(board, side, my_score_cols, opp_score_cols);
+        for (const auto& m : moves) {
+            if (m.action == "move" || m.action == "push") {
+                int tx = m.to[0], ty = m.to[1];
+                if (std::find(my_score_cols.begin(), my_score_cols.end(), tx) != my_score_cols.end()) {
+                    count++;
+                }
+                // if pushed_to score area
+                if (!m.pushed_to.empty()) {
+                    int px = m.pushed_to[0], py = m.pushed_to[1];
+                    if (std::find(my_score_cols.begin(), my_score_cols.end(), px) != my_score_cols.end()) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    // Estimate minimal number of moves needed for side to reach 4 stones in score area
+    static int minMovesToFinish(
+        const int scoredCount,
+        const int oneMoveReachableCount
+    ) {
+        int need = std::max(0, 4 - scoredCount);
+        if (need == 0) return 0;
+
+        // number of stones needed except those that are reachable in 1 move
+        int effectiveNeed = std::max(0, need - oneMoveReachableCount);
+
+        // assuming each remaining stone costs at least 2 plies to set up in heuristic
+        return effectiveNeed * 2 + (need - effectiveNeed);
+    }
+
+    // Count potential lanes: number of river chains that point into (or just before) my scoring cols
+    static int riverLanePotentialTowardScore(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        const std::string& side,
+        const std::vector<int>& my_score_cols,
+        const std::vector<int>& opp_score_cols
+    ) {
+        int score = 0;
+        for (int y = 0; y < (int)board.size(); ++y) {
+            for (int x = 0; x < (int)board[0].size(); ++x) {
+                if (empty_cell(board,x, y) || is_stone(board,x, y)) continue;
+
+                // if this river is oriented horizontally and next cell is a scoring col
+                if (orient_at(board,x, y) == "horizontal") {
+                    if (std::find(my_score_cols.begin(), my_score_cols.end(), x+1) != my_score_cols.end() ||
+                        std::find(my_score_cols.begin(), my_score_cols.end(), x-1) != my_score_cols.end()) {
+                        score++;
+                    }
+                }
+                if (orient_at(board,x, y) == "vertical") {
+                    // check above/below
+                    if (std::find(my_score_cols.begin(), my_score_cols.end(), x) != my_score_cols.end()) {
+                        score++;
+                    }
+                }
+            }
+        }
+        return score;
+    }
+
+    int evaluate(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        const std::string& me,
+        const std::vector<int>& my_score_cols,
+        const std::vector<int>& opp_score_cols
+    ) {
+        std::string opp = (me == "circle" ? "square" : "circle");
+
+        // number of stones scored
+        int nself = scoredCount(board, me,  my_score_cols);
+        int nopp  = scoredCount(board, opp, opp_score_cols);
+
+        if (nself >= 4) return  1000000;    // won
+        if (nopp  >= 4) return -1000000;    // lost
+
+        // number of stones that can be scored with 1 move
+        int mself = oneMoveReachables(board, me,  my_score_cols, opp_score_cols);
+        int mopp  = oneMoveReachables(board, opp, opp_score_cols, my_score_cols);
+
+        // minimum number of moves required to win the game
+        int dself = minMovesToFinish(nself, mself);
+        int dopp  = minMovesToFinish(nopp, mopp);
+
+        // number of river lanes present to the scoring area in the current board
+        int laneSelf = riverLanePotentialTowardScore(board, me,  my_score_cols, opp_score_cols);
+        int laneOpp  = riverLanePotentialTowardScore(board, opp, opp_score_cols, my_score_cols);
+
+        int score = 
+            1000 * (nself - nopp) +
+            180 * (mself - mopp) +
+            - 15 * (dself - dopp) +
+            40 * (laneSelf - laneOpp);
+
+        return score;
+    }
+
 };
 
 // ---- PyBind11 bindings ----
