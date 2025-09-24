@@ -4,6 +4,8 @@
 #include <vector>
 #include <map>
 #include <random>
+#include <algorithm>
+#include <climits>
 
 namespace py = pybind11;
 
@@ -44,6 +46,11 @@ struct Move {
     std::string orientation;
 };
 
+struct MinMaxNode {
+    int value;
+    Move bestMove;
+};
+
 // ---- Student Agent ----
 class StudentAgent {
 public:
@@ -53,10 +60,23 @@ public:
         int rows = board.size();
         int cols = board[0].size();
 
-        std::vector<Move> moves = generate_all_possible_moves(board, side, score_cols, score_cols);
-
         
+        const std::string me = side;
+        const std::string opp = side == "circle" ? "square" : "circle";
 
+        const std::vector<int> my_score_cols  = score_cols;
+        const std::vector<int> opp_score_cols = {};
+        
+        const int DEPTH = 3;
+        
+        const int alpha = INT_MIN;
+        const int beta = INT_MAX;
+        auto result = minMaxWithAlphaBeta(board, DEPTH, alpha, beta, me, me, my_score_cols, opp_score_cols);
+        if(!result.bestMove.action.empty())
+            return result.bestMove;
+        
+        // If best Node could not be found fallback to any random move
+        std::vector<Move> moves = generate_all_possible_moves(board, side, score_cols, score_cols);
         if (moves.empty()) {
             return {"move", {0,0}, {0,0}, {}, ""}; // fallback
         }
@@ -434,10 +454,169 @@ private:
         int score = 
             1000 * (nself - nopp) +
             180 * (mself - mopp) +
-            - 15 * (dself - dopp) +
+            -15 * (dself - dopp) +
             40 * (laneSelf - laneOpp);
 
         return score;
+    }
+
+    // ------------------------- Min Max Tree Implementation ---------------------
+
+    // apply move for min max tree so that board gets updated in place.
+    static std::vector<std::vector<std::map<std::string, std::string>>> apply_move(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        const Move& m
+    ) {
+        std::vector<std::vector<std::map<std::string, std::string>>> nextBoard = board;
+
+        auto rows = (int)board.size();
+        auto cols = rows ? (int)board[0].size() : 0;
+
+        auto in_bounds = [&](int x,int y){ return x>=0 && x<cols && y>=0 && y<rows; };
+        auto empty_cell = [&](int x,int y){ return in_bounds(x,y) && nextBoard[y][x].empty(); };
+        auto side_at = [&](int x,int y)->std::string {
+            if (!in_bounds(x,y) || nextBoard[y][x].empty()) return "";
+            return get(nextBoard[y][x], "side");
+        };
+        auto owner_at = [&](int x,int y)->std::string {
+            if (!in_bounds(x,y) || nextBoard[y][x].empty()) return "";
+            return get(nextBoard[y][x], "owner");
+        };
+        auto orient_at = [&](int x,int y)->std::string {
+            if (!in_bounds(x,y) || nextBoard[y][x].empty()) return "";
+            return get(nextBoard[y][x], "orientation");
+        };
+        auto set_empty = [&](int x,int y){
+            if (in_bounds(x,y)) nextBoard[y][x].clear();
+        };
+        auto set_piece = [&](int x,int y,
+                            const std::string& owner,
+                            const std::string& side,
+                            const std::string& orientation){
+            if (!in_bounds(x,y)) return;
+            nextBoard[y][x].clear();
+            nextBoard[y][x]["owner"] = owner;
+            nextBoard[y][x]["side"]  = side;
+            if (side == "river") nextBoard[y][x]["orientation"] = orientation;
+        };
+
+        const int fx = m.from[0], fy = m.from[1];
+        const int tx = m.to[0], ty = m.to[1];
+
+        if(m.action == "move") {
+            const std::string me = owner_at(fx,fy);
+            const std::string side = side_at(fx,fy);
+            const std::string orientation = orient_at(fx,fy);
+            set_empty(fx,fy);
+            set_piece(tx,ty, me, side, (side=="river" ? orientation : ""));
+            return nextBoard;
+        }
+        else if(m.action == "push") {
+            const int px = m.pushed_to[0], py = m.pushed_to[1];
+
+            const std::string pusherOwner = owner_at(fx,fy);
+            const std::string pusherSide  = side_at(fx,fy);
+            const std::string pusherOrientation   = orient_at(fx,fy);
+
+            const std::string pushedOwner = owner_at(tx,ty);
+            const std::string pushedSide  = side_at(tx,ty);
+            const std::string pushedOrientation   = orient_at(tx,ty);
+
+            // move pushed piece
+            set_empty(tx,ty);
+            set_piece(px,py, pushedOwner, pushedSide, (pushedSide=="river" ? pushedOrientation : ""));
+
+            // move pusher into the vacated square
+            set_empty(fx,fy);
+            if (pusherSide == "river") {
+                // river that pushed becomes stone
+                set_piece(tx,ty, pusherOwner, "stone", "");
+            } else {
+                set_piece(tx,ty, pusherOwner, pusherSide, (pusherSide=="river" ? pusherOrientation : ""));
+            }
+            return nextBoard;
+        }
+        else if(m.action == "flip") {
+            const std::string me   = owner_at(fx,fy);
+            const std::string side = side_at(fx,fy);
+            if (side == "stone") {
+                set_piece(fx,fy, me, "river", m.orientation);
+            } else {
+                set_piece(fx,fy, me, "stone", "");
+            }
+            return nextBoard;
+        }
+        else if(m.action == "rotate") {
+            const std::string me   = owner_at(fx,fy);
+            const std::string side = side_at(fx,fy);
+            if (side == "river") {
+                std::string newOrientation = m.orientation;
+                set_piece(fx,fy, me, "river", newOrientation);
+            }
+            return nextBoard;
+        }
+        return nextBoard;
+    }
+
+    // Order min-max nodes in the order push > move > flip > rotate
+    static void order_moves(std::vector<Move>& moves) {
+        auto key = [&](const Move& m)->int {
+            if (m.action=="push") return 3;
+            if (m.action=="move") return 2;
+            if (m.action=="flip" || m.action=="rotate") return 1;
+            return 0;
+        };
+        std::stable_sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b){
+            return key(a) > key(b);
+        });
+    }
+
+    MinMaxNode minMaxWithAlphaBeta(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        int depth, int alpha, int beta,
+        const std::string& side_to_move,
+        const std::string& me,
+        const std::vector<int>& my_score_cols,
+        const std::vector<int>& opp_score_cols
+    ) {
+        const std::string opp = (me=="circle" ? "square" : "circle");
+        if (depth == 0) {
+            return { evaluate(board, me, my_score_cols, opp_score_cols), {} };
+        }
+
+        const bool myTurn = (side_to_move == me);
+        const auto& cur_my_cols  = myTurn ? my_score_cols  : opp_score_cols;
+        const auto& cur_opp_cols = myTurn ? opp_score_cols : my_score_cols;
+
+        auto moves = generate_all_possible_moves(board, side_to_move, cur_my_cols, cur_opp_cols);
+        if (moves.empty()) {
+            return { evaluate(board, me, my_score_cols, opp_score_cols), {} };
+        }
+        order_moves(moves);
+
+        if (myTurn) {
+            // Max Nodes
+            MinMaxNode bestNode{ std::numeric_limits<int>::min(), {} };
+            for (const auto& m : moves) {
+                std::vector<std::vector<std::map<std::string, std::string>>> newBoard = apply_move(board, m);
+                auto result = minMaxWithAlphaBeta(newBoard, depth-1, alpha, beta, opp, me, my_score_cols, opp_score_cols);
+                if (result.value > bestNode.value) { bestNode.value = result.value; bestNode.bestMove = m; }
+                alpha = std::max(alpha, result.value);
+                if (alpha >= beta) break; // prune
+            }
+            return bestNode;
+        } else {
+            // Min Nodes
+            MinMaxNode bestNode{ std::numeric_limits<int>::max(), {} };
+            for (const auto& m : moves) {
+                std::vector<std::vector<std::map<std::string, std::string>>> newBoard = apply_move(board, m);
+                auto result = minMaxWithAlphaBeta(newBoard, depth-1, alpha, beta, me, me, my_score_cols, opp_score_cols);
+                if (result.value < bestNode.value) { bestNode.value = result.value; bestNode.bestMove = m; }
+                beta = std::min(beta, result.value);
+                if (beta <= alpha) break; // prune
+            }
+            return bestNode;
+        }
     }
 
 };
