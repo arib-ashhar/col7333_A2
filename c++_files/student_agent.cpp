@@ -650,8 +650,8 @@ private:
     // Order min-max nodes in the order push > move > flip > rotate
     static void order_moves(std::vector<Move>& moves) {
         auto key = [&](const Move& m)->int {
-            if (m.action=="push") return 3;
-            if (m.action=="move") return 2;
+            if (m.action=="move") return 3;
+            if (m.action=="push") return 2;
             if (m.action=="flip" || m.action=="rotate") return 1;
             return 0;
         };

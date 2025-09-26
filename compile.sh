@@ -2,7 +2,7 @@
 set -e  # exit immediately on error
 
 # Go into the C++ folder
-cd c++_sample_files
+cd c++_files
 
 # Clean and rebuild
 rm -rf build
@@ -20,5 +20,5 @@ make
 cd ../..
 
 # Copy wrapper and build artifacts into client_server/
-cp c++_sample_files/student_agent_cpp.py client_server/
-cp -r c++_sample_files/build client_server/
+cp c++_files/student_agent_cpp.py client_server/
+cp -r c++_files/build client_server/
