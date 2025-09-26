@@ -6,6 +6,7 @@
 #include <random>
 #include <algorithm>
 #include <climits>
+#include <iostream>
 
 namespace py = pybind11;
 
@@ -51,8 +52,11 @@ struct MinMaxNode {
     Move bestMove;
 };
 
+
 // ---- Student Agent ----
 class StudentAgent {
+    private:
+        int movesCount = 0;
 public:
     explicit StudentAgent(std::string side) : side(std::move(side)), gen(rd()) {}
 
@@ -62,28 +66,43 @@ public:
 
         
         const std::string me = side;
-        const std::string opp = side == "circle" ? "square" : "circle";
-
         const std::vector<int> my_score_cols  = score_cols;
         const std::vector<int> opp_score_cols = {};
-        
-        const int DEPTH = 3;
-        
+
         const int alpha = INT_MIN;
         const int beta = INT_MAX;
-        auto result = minMaxWithAlphaBeta(board, DEPTH, alpha, beta, me, me, my_score_cols, opp_score_cols);
-        if(!result.bestMove.action.empty())
-            return result.bestMove;
         
-        // If best Node could not be found fallback to any random move
-        std::vector<Move> moves = generate_all_possible_moves(board, side, score_cols, score_cols);
-        if (moves.empty()) {
-            return {"move", {0,0}, {0,0}, {}, ""}; // fallback
+        // time constraint, MOve Strategy
+        constexpr float TOTAL_TIME = 60.0f;
+        constexpr float MINMAX_TIME_LIMIT = 0.7f * TOTAL_TIME;
+
+        //Set the DePTH based on the time left
+        const int DEPTH = current_player_time < 0.4f * TOTAL_TIME ? 3 : current_player_time < 0.6f * TOTAL_TIME ? 2 : 1;
+
+
+        auto openingMove = generate_opening_move(board, me, my_score_cols, opp_score_cols);
+        if (openingMove.has_value()) {
+            movesCount++;
+            //std::cout<<"MovesCount="<<movesCount<<" Opening MOve played="<<std::endl;
+            return openingMove.value();
         }
 
+        if(current_player_time > MINMAX_TIME_LIMIT && current_player_time > opponent_time) {
+            auto result = minMaxWithAlphaBeta(board, DEPTH, alpha, beta, me, me, my_score_cols, opp_score_cols);
+            if (!result.bestMove.action.empty()) {
+                //std::cout<<"MovesCount="<<movesCount<<" MinMax MOve played="<<std::endl;
+                movesCount++;
+                return result.bestMove;
+            }
+        }
+
+        auto moves = generate_all_possible_moves(board, side, score_cols, score_cols);
+        movesCount++;
+        if (moves.empty()) return {"move", {0,0}, {0,0}, {}, ""};
         std::uniform_int_distribution<> dist(0, moves.size()-1);
         return moves[dist(gen)];
     }
+
 
 private:
     std::string side;
@@ -91,7 +110,7 @@ private:
     std::mt19937 gen;
 
 
-    // Helper Functions
+    //Helper Functions
     static inline bool has(const std::map<std::string,std::string>& m, const char* k) {
         return m.find(k) != m.end();
     }
@@ -460,9 +479,79 @@ private:
         return score;
     }
 
+
+    std::optional<Move> generate_opening_move(
+        const std::vector<std::vector<std::map<std::string, std::string>>>& board,
+        const std::string& my_side,
+        const std::vector<int>& my_score_cols,
+        const std::vector<int>& opp_score_cols
+    ) {
+        int rows = (int)board.size();
+        int cols = rows ? (int)board[0].size() : 0;
+        if (rows == 0 || cols == 0) return std::nullopt;
+
+        int dy = (my_side == "circle" ? -1 : +1);
+
+        auto path_clear = [&](int x, int y, int nx, int ny) {
+            if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) return false;
+            if (!board[ny][nx].empty()) return false;
+            if (std::find(opp_score_cols.begin(), opp_score_cols.end(), nx) != opp_score_cols.end())
+                return false;
+            return true;
+        };
+
+        int central_left  = cols / 2 - 1;
+        int central_right = cols / 2;
+        for (int x : {central_left, central_right}) {
+            for (int y = 0; y < rows; y++) {
+                if (owner_at(board, x, y) == my_side && is_stone(board, x, y)) {
+                    int ny = y + dy;
+                    if (path_clear(x, y, x, ny)) {
+                        return Move{"move", {x, y}, {x, ny}, {}, ""};
+                    }
+                }
+            }
+        }
+
+        int outer_left  = central_left - 2;
+        int outer_right = central_right + 2;
+        for (int x : {outer_left, outer_right}) {
+            if (x < 0 || x >= cols) continue;
+            for (int y = 0; y < rows; y++) {
+                if (owner_at(board, x, y) == my_side && is_stone(board, x, y)) {
+                    int ny = y + dy;
+                    if (path_clear(x, y, x, ny)) {
+                        return Move{"move", {x, y}, {x, ny}, {}, ""};
+                    }
+                }
+            }
+        }
+
+        int sec_left  = central_left - 1;
+        int sec_right = central_right + 1;
+        for (int x : {sec_left, sec_right}) {
+            if (x < 0 || x >= cols) continue;
+            for (int y = 0; y < rows; y++) {
+                if (owner_at(board, x, y) == my_side && is_stone(board, x, y)) {
+                    // flip to horizontal river
+                    return Move{"flip", {x, y}, {x, y}, {}, "horizontal"};
+                }
+                if (owner_at(board, x, y) == my_side && is_river(board, x, y)) {
+                    int ny = y + dy;
+                    if (path_clear(x, y, x, ny)) {
+                        return Move{"move", {x, y}, {x, ny}, {}, ""};
+                    }
+                }
+            }
+        }
+
+        return std::nullopt;
+    }
+
+
     // ------------------------- Min Max Tree Implementation ---------------------
 
-    // apply move for min max tree so that board gets updated in place.
+    //apply move for min max tree so that board gets updated in place.
     static std::vector<std::vector<std::map<std::string, std::string>>> apply_move(
         const std::vector<std::vector<std::map<std::string, std::string>>>& board,
         const Move& m
