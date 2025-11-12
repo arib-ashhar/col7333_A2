@@ -3,3 +3,4 @@ myenv/
 c++_files/build/
 agent2/
 client_server/build/
+client_server/__pycache__
