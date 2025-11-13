@@ -245,41 +245,208 @@ class BaseAgent(ABC):
 
 class StudentAgent(BaseAgent):
     """
-    Student Agent Implementation
-    
-    TODO: Implement your AI agent for the River and Stones game.
-    The goal is to get 4 of your stones into the opponent's scoring area.
-    
-    You have access to these utility functions:
-    - generate_all_moves(): Get all legal moves for current player
-    - basic_evaluate_board(): Basic position evaluation 
-    - simulate_move(): Test moves on board copy
-    - count_stones_in_scoring_area(): Count stones in scoring positions
+    Flank-attack scripted opening with final 'make stones in SA' step.
+    - Works for small/medium/large (SA width 4/5/6).
+    - Mirrors for left/right flank via `edge`.
+    - Circle (up) & Square (down) row math fixed.
     """
-    
-    def __init__(self, player: str):
+
+    def __init__(self, player: str, edge: str = "right"):
         super().__init__(player)
-        # TODO: Add any initialization you need
-    
-    def choose(self, board: List[List[Any]], rows: int, cols: int, score_cols: List[int], current_player_time: float, opponent_time: float) -> Optional[Dict[str, Any]]:
-        """
-        Choose the best move for the current board state.
-        
-        Args:
-            board: 2D list representing the game board
-            rows, cols: Board dimensions  
-            score_cols: Column indices for scoring areas
-            
-        Returns:
-            Dictionary representing your chosen move
-        """
+        self.edge = edge
+        self._plan: Optional[List[Dict[str, Any]]] = None
+        self._i: int = 0
+        self._plan_printed = False
+
+    def choose(
+        self,
+        board: List[List[Any]],
+        rows: int,
+        cols: int,
+        score_cols: List[int],
+        current_player_time: float,
+        opponent_time: float,
+    ) -> Optional[Dict[str, Any]]:
+
+        if self._plan is None:
+            edge = self.edge  # respect requested flank for both players
+            self._plan, total = self.generate_initial_attacking_plan(
+                self.player, rows, cols, score_cols, edge=edge
+            )
+            if not self._plan_printed:
+                print(f"[{self.player}] Opening plan (edge={edge}, steps={total}):")
+                for i, m in enumerate(self._plan, 1):
+                    print(f"{i:02d}. {m}")
+                self._plan_printed = True
+            self._i = 0
+
+        # play next applicable step; skip stale ones
+        while self._plan is not None and self._i < len(self._plan):
+            m = self._plan[self._i]
+            if self._looks_applicable(board, self.player, m):
+                self._i += 1
+                return m
+            self._i += 1
+
+        # fallback
         moves = generate_all_moves(board, self.player, rows, cols, score_cols)
-        
         if not moves:
             return None
-        
-        # TODO: Replace random selection with your AI algorithm
-        return random.choice(moves)
+        flips = [m for m in moves if m["action"] == "flip"]
+        return random.choice(flips or moves)
+
+    @staticmethod
+    def _looks_applicable(board, player: str, move: Dict[str, Any]) -> bool:
+        fr = move.get("from")
+        if not fr or not isinstance(fr, (list, tuple)) or len(fr) != 2:
+            return True
+        fy = fr[1]; fx = fr[0]
+        if not in_bounds(fx, fy, len(board), len(board[0])):
+            return False
+        p = board[fy][fx]
+        return bool(p and p.owner == player)
+
+    # ---------------- Opening generator (O(1)) ----------------
+    @staticmethod
+    def generate_initial_attacking_plan(
+        player: str, rows: int, cols: int, score_cols: List[int], edge: str = "right"
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Single-flank rush with final 'flip to stone' for any rivers that enter SA.
+        Mirrors for left/right; adapts for circle/square and SA width 4/5/6.
+        Assumes default_start_board().
+        """
+        # geometry
+        p = cols
+        x_anchor = int(cols/2 + p/4 - 1)  # anchor
+        right_flank = (edge == "right")
+        edge_x = (cols - 1) if right_flank else 0
+
+        # Row layout
+        if player == "circle":
+            horiz_row = rows - 4      # e.g., 9 (lower back row)
+            vert_row  = rows - 5      # e.g., 8 (upper back row)
+            board_edge_row = 0
+        else:  # square
+            horiz_row = 3             # EXACT rows you wanted
+            vert_row  = 4
+            board_edge_row = rows - 1
+
+        sa_row = top_score_row() if player == "circle" else bottom_score_row(rows)
+
+        # SA cells (left->right)
+        sa_cols_sorted = sorted(score_cols)
+        k = min(len(sa_cols_sorted), 6)
+        sa_targets = [(sa_cols_sorted[i], sa_row) for i in range(k)]
+
+        # helper to bias columns toward the chosen flank
+        def lane(off_from_anchor_toward_flank: int) -> int:
+            return x_anchor + (off_from_anchor_toward_flank * (+1 if right_flank else -1))
+
+        # Three horizontals on the back (horiz_row): D, E, F (closest to flank)
+        D = lane(-2)
+        E = lane(-1)
+        F = lane(0)
+
+        # Two verticals on the upper row (vert_row): V1 above E, V2 above F
+        V1 = lane(-1)
+        V2 = lane(0)
+
+        # Extras for larger boards
+        extra1 = lane(-3)   # inner source when k>=4
+        extra2 = lane(+1)   # for k>=6
+
+        moves: List[Dict[str, Any]] = []
+        sa_river_to_flip: List[Tuple[int, int]] = []  # <-- SA cells that will contain rivers to flip later
+
+        def flip_h(col: int, row: int):
+            moves.append({"action": "flip", "from": [col, row], "orientation": "horizontal"})
+
+        def flip_v(col: int, row: int):
+            moves.append({"action": "flip", "from": [col, row], "orientation": "vertical"})
+
+        def rotate_here(xy: Tuple[int, int]):
+            moves.append({"action": "rotate", "from": [xy[0], xy[1]]})
+
+        def mv(fr: Tuple[int, int], to: Tuple[int, int]):
+            moves.append({"action": "move", "from": [fr[0], fr[1]], "to": [to[0], to[1]]})
+
+        # ---- Phase A: flips (match your examples) ----
+        flip_h(D, horiz_row)  # river
+        flip_h(E, horiz_row)  # river
+        flip_h(F, horiz_row)  # river
+        flip_v(V1, vert_row)  # river
+        flip_v(V2, vert_row)  # river
+
+        # ---- Phase B: stream setup ----
+        # V2 -> flank contact on horizontal row
+        mv((V2, vert_row), (edge_x, horiz_row))
+        # F  -> board edge row (trunk far end)
+        mv((F, horiz_row), (edge_x, board_edge_row))
+        # V1 -> its OWN column at the board edge row, then rotate to keep as feeder (not SA yet)
+        mv((V1, vert_row), (V1, board_edge_row))
+        rotate_here((V1, board_edge_row))
+
+        # ---- Phase C: feed SA in your order ----
+        # near-flank SA index
+        idx_near_flank = 1 if right_flank else (k - 2)
+        if 0 <= idx_near_flank < k:
+            tgt = sa_targets[idx_near_flank]
+            mv((E, horiz_row), tgt)         # E was flipped to river
+            sa_river_to_flip.append(tgt)    # mark for final stone flip
+
+        # inner-most from extra1 (usually stone -> no flip)
+        if k >= 4:
+            inner_idx = 0 if right_flank else (k - 1)
+            mv((extra1, horiz_row), sa_targets[inner_idx])
+
+        # far-inner via vertical-row offset from E’s col (likely stone -> no flip)
+        from_col = E - 1 if right_flank else E + 1
+        if 0 <= from_col < cols:
+            far_inner_idx = 0 if right_flank else (k - 1)
+            if k >= 5 or far_inner_idx != inner_idx:
+                mv((from_col, vert_row), sa_targets[far_inner_idx])
+
+        # nudge D sideways on H-row, then use V-row partner into flankmost SA (stone -> no flip)
+        d_step = D - 1 if right_flank else D + 1
+        if 0 <= d_step < cols:
+            mv((D, horiz_row), (d_step, horiz_row))
+        flankmost_idx = (k - 1) if right_flank else 0
+        mv((d_step if 0 <= d_step < cols else D, vert_row), sa_targets[flankmost_idx])
+
+        # fill remaining SA with the flank contact (edge_x, horiz_row) -> river => flip,
+        # then far edge river (edge_x, board_edge_row) -> river => flip
+        remaining = set(sa_targets)
+        for m in moves:
+            if m["action"] == "move":
+                to = tuple(m["to"])
+                if to in remaining and to[1] == sa_row:
+                    remaining.discard(to)
+        remaining = list(remaining)
+
+        if remaining:
+            tgt_trunk = sorted(remaining, key=lambda t: (abs(t[0] - edge_x), abs(t[0] - x_anchor)))[0]
+            mv((edge_x, horiz_row), tgt_trunk)    # source is V2 river at flank contact
+            sa_river_to_flip.append(tgt_trunk)    # flip later to stone
+            remaining.remove(tgt_trunk)
+
+        if remaining:
+            tgt_far = sorted(remaining, key=lambda t: abs(t[0] - edge_x))[0]
+            mv((edge_x, board_edge_row), tgt_far) # source is F river at far edge
+            sa_river_to_flip.append(tgt_far)      # flip later to stone
+            remaining.remove(tgt_far)
+
+        if k >= 6 and remaining:
+            # extra2 is a stone source (we did not flip it), so no flip needed
+            mv((extra2, horiz_row), remaining[0])
+            remaining.pop(0)
+
+        # ---- Phase D: FINALIZE — flip any rivers that entered SA to STONE ----
+        # (Orientation not needed for stone; {'action':'flip','from':[..]} toggles river->stone.)
+        for (fx, fy) in sa_river_to_flip:
+            moves.append({"action": "flip", "from": [fx, fy]})
+
+        return moves, len(moves)
 
 # ==================== TESTING HELPERS ====================
 
