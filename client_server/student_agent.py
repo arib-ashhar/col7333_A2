@@ -277,13 +277,29 @@ class StudentAgent(BaseAgent):
         opponent_time: float,
     ) -> Optional[Dict[str, Any]]:
 
-        # 0) Lazy init defense layout
+        # ---- lazy init holders ----
+        if not hasattr(self, "_def_setup_done"):
+            self._def_setup_done = False
+        if not hasattr(self, "_def_setup_plan"):
+            self._def_setup_plan = []
+        if not hasattr(self, "_def_setup_idx"):
+            self._def_setup_idx = 0
+
+        if not hasattr(self, "_atk_plan"):
+            self._atk_plan = None
+        if not hasattr(self, "_atk_idx"):
+            self._atk_idx = 0
+        if not hasattr(self, "_atk_printed"):
+            self._atk_printed = False
+
+        # 0) Ensure defense geometry is initialized
         if self.defense is None:
             self.init_defense_layout(board, rows, cols, score_cols)
 
-        # 1) Hard-coded initial defense setup (only once)
+        # 1) INITIAL DEFENSE SCRIPT (one-time)
         if not self._def_setup_done:
             if not self._def_setup_plan:
+                # Your precomputed defensive opener (already implemented by you)
                 self._def_setup_plan = self.get_initial_defense_moves(rows, cols)
                 self._def_setup_idx = 0
                 if self._def_setup_plan:
@@ -291,7 +307,7 @@ class StudentAgent(BaseAgent):
                     for i, m in enumerate(self._def_setup_plan, 1):
                         print(f"{i:02d}. {m}")
 
-            # play next applicable scripted defense move
+            # Play next applicable scripted defense move; skip stale ones
             while self._def_setup_idx < len(self._def_setup_plan):
                 m = self._def_setup_plan[self._def_setup_idx]
                 if self.check_if_move_applicable(board, self.player, m):
@@ -299,31 +315,51 @@ class StudentAgent(BaseAgent):
                     return m
                 self._def_setup_idx += 1
 
-            # finished scripted defense
+            # Finished scripted defense
             self._def_setup_done = True
 
-        # 2) HIGH PRIORITY: reactive defense (includes restore flips, pushes, alignment)
+        # 2) HIGH PRIORITY: REACTIVE DEFENSE (includes restores / pushes / alignments)
         dm = self.get_defensive_move(board, rows, cols, score_cols)
         if dm:
             return dm
 
-        # 3) (Attack plan is disabled per request)
-        # if self._plan is None:
-        #     self._plan, total = self.generate_initial_attacking_plan(self.player, rows, cols, score_cols, edge=self.edge)
-        #     if not self._plan_printed:
-        #         print(f"[{self.player}] Opening plan (edge={self.edge}, steps={total}):")
-        #         for i, m in enumerate(self._plan, 1):
-        #             print(f"{i:02d}. {m}")
-        #         self._plan_printed = True
-        #     self._i = 0
-        # while self._plan is not None and self._i < len(self._plan):
-        #     m = self._plan[self._i]
-        #     if self.check_if_move_applicable(board, self.player, m):
-        #         self._i += 1
-        #         return m
-        #     self._i += 1
+        # 3) PREDEFINED ATTACK SCRIPT (runs only after initial defense is done)
+        if self._def_setup_done:
+            # Lazy init attack plan
+            if self._atk_plan is None:
+                # Use your predefined attack book
+                if hasattr(self, "get_initial_attack_moves"):
+                    self._atk_plan = self.get_initial_attack_moves(rows, cols)
+                else:
+                    # If you wrapped it differently, swap the call here
+                    self._atk_plan = []
+                self._atk_idx = 0
+                if self._atk_plan and not self._atk_printed:
+                    print(f"[{self.player}] Initial ATK plan ({rows}x{cols}, steps={len(self._atk_plan)}):")
+                    for i, m in enumerate(self._atk_plan, 1):
+                        print(f"{i:02d}. {m}")
+                    self._atk_printed = True
 
-        # 4) Fallback: any legal move (prefer flips to keep things dynamic)
+            # While there are scripted attack moves left
+            if self._atk_plan:
+                # Before executing each attack step, re-check reactive defense (still higher priority)
+                dm2 = self.get_defensive_move(board, rows, cols, score_cols)
+                if dm2:
+                    return dm2
+
+                # Try current attack step ONLY; if not applicable -> return None (per requirement)
+                if self._atk_idx < len(self._atk_plan):
+                    am = self._atk_plan[self._atk_idx]
+                    if self.check_if_move_applicable(board, self.player, am):
+                        self._atk_idx += 1
+                        return am
+                    else:
+                        # TODO: attack step not currently feasible; handle re-planning/escalation later.
+                        print("Attck Move Not possible = ", am)
+                        return None
+                # Attack plan exhausted -> fall through to fallback random
+
+        # 4) FALLBACK: any legal move (prefer flips)
         moves = generate_all_moves(board, self.player, rows, cols, score_cols)
         if not moves:
             return None
@@ -427,6 +463,166 @@ class StudentAgent(BaseAgent):
         # Return precomputed plan if available
         plan = PREDEFINED_MOVES_DEFENCE.get(self.player, {}).get(rows, [])
         return plan.copy()  # defensive copy
+    
+    # -------- ATTACK: predefined moves for attack
+    def get_initial_attack_moves(self, rows: int, cols: int) -> List[Dict[str, Any]]:
+        """
+        Returns precomputed ATTACK setup moves based on board size and player.
+        Supports circle/square for 13x12, 15x14, and 17x16 boards.
+        Falls back to [] if not defined.
+        """
+        PREDEFINED_MOVES_ATTACK = {
+            "square": {
+                13: [
+                    {"action": "flip", "from": [7, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [8, 4], "orientation": "vertical"},
+                    {"action": "move", "from": [8, 4], "to": [10, 4]},
+                    {"action": "flip", "from": [6, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [5, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [4, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [3, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [7, 3], "orientation": "horizontal"},
+                    {"action": "move", "from": [7, 3], "to": [10, 12]},
+                    {"action": "move", "from": [6, 3], "to": [7, 12]},
+                    {"action": "flip", "from": [7, 12], "orientation": "vertical"},
+                    {"action": "move", "from": [3, 4], "to": [7, 10]},
+                    {"action": "move", "from": [4, 4], "to": [4, 10]},
+                    {"action": "move", "from": [5, 4], "to": [5, 10]},
+                    {"action": "move", "from": [6, 4], "to": [6, 10]},
+                    {"action": "flip", "from": [7, 10]},
+                    {"action": "flip", "from": [6, 10]},
+                    {"action": "flip", "from": [5, 10]},
+                    {"action": "flip", "from": [4, 10]},
+                ],
+                15: [
+                    {"action": "flip", "from": [8, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [9, 4], "orientation": "vertical"},
+                    {"action": "move", "from": [9, 4], "to": [12, 4]},
+                    {"action": "flip", "from": [7, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [6, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [5, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [4, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [3, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [8, 3], "orientation": "horizontal"},
+                    {"action": "move", "from": [8, 3], "to": [12, 14]},
+                    {"action": "move", "from": [7, 3], "to": [8, 14]},
+                    {"action": "flip", "from": [8, 14], "orientation": "vertical"},
+                    {"action": "move", "from": [3, 4], "to": [8, 12]},
+                    {"action": "move", "from": [4, 4], "to": [4, 12]},
+                    {"action": "move", "from": [5, 4], "to": [5, 12]},
+                    {"action": "move", "from": [6, 4], "to": [6, 12]},
+                    {"action": "move", "from": [7, 4], "to": [7, 12]},
+                    {"action": "flip", "from": [4, 12]},
+                    {"action": "flip", "from": [5, 12]},
+                    {"action": "flip", "from": [6, 12]},
+                    {"action": "flip", "from": [7, 12]},
+                    {"action": "flip", "from": [8, 12]},
+                ],
+                17: [
+                    {"action": "flip", "from": [10, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [11, 4], "orientation": "vertical"},
+                    {"action": "move", "from": [11, 4], "to": [14, 4]},
+                    {"action": "flip", "from": [9, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [8, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [7, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [6, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [5, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [4, 4], "orientation": "horizontal"},
+                    {"action": "flip", "from": [10, 3], "orientation": "horizontal"},
+                    {"action": "move", "from": [10, 3], "to": [14, 16]},
+                    {"action": "move", "from": [9, 3], "to": [9, 16]},
+                    {"action": "flip", "from": [9, 16], "orientation": "vertical"},
+                    {"action": "move", "from": [4, 4], "to": [9, 14]},
+                    {"action": "move", "from": [5, 4], "to": [5, 14]},
+                    {"action": "move", "from": [6, 4], "to": [6, 14]},
+                    {"action": "move", "from": [7, 4], "to": [7, 14]},
+                    {"action": "move", "from": [8, 4], "to": [8, 14]},
+                    {"action": "move", "from": [9, 4], "to": [10, 14]},
+                    {"action": "flip", "from": [5, 14]},
+                    {"action": "flip", "from": [6, 14]},
+                    {"action": "flip", "from": [7, 14]},
+                    {"action": "flip", "from": [8, 14]},
+                    {"action": "flip", "from": [9, 14]},
+                    {"action": "flip", "from": [10, 14]},
+                ],
+            },
+            "circle": {
+                13: [
+                    {"action": "flip", "from": [7, 8], "orientation": "horizontal"},
+                    {"action": "flip", "from": [8, 8], "orientation": "vertical"},
+                    {"action": "move", "from": [8, 8], "to": [10, 8]},
+                    {"action": "flip", "from": [6, 8], "orientation": "horizontal"},
+                    {"action": "flip", "from": [5, 8], "orientation": "horizontal"},
+                    {"action": "flip", "from": [4, 8], "orientation": "horizontal"},
+                    {"action": "flip", "from": [3, 8], "orientation": "horizontal"},
+                    {"action": "flip", "from": [7, 9], "orientation": "horizontal"},
+                    {"action": "move", "from": [7, 9], "to": [10, 0]},
+                    {"action": "move", "from": [6, 9], "to": [7, 0]},
+                    {"action": "flip", "from": [7, 0], "orientation": "vertical"},
+                    {"action": "move", "from": [3, 8], "to": [7, 2]},
+                    {"action": "move", "from": [4, 8], "to": [4, 2]},
+                    {"action": "move", "from": [5, 8], "to": [5, 2]},
+                    {"action": "move", "from": [6, 8], "to": [6, 2]},
+                    {"action": "flip", "from": [7, 2]},
+                    {"action": "flip", "from": [6, 2]},
+                    {"action": "flip", "from": [5, 2]},
+                    {"action": "flip", "from": [4, 2]},
+                ],
+                15: [
+                    {"action": "flip", "from": [8, 10], "orientation": "horizontal"},
+                    {"action": "flip", "from": [9, 10], "orientation": "vertical"},
+                    {"action": "move", "from": [9, 10], "to": [12, 10]},
+                    {"action": "flip", "from": [7, 10], "orientation": "horizontal"},
+                    {"action": "flip", "from": [6, 10], "orientation": "horizontal"},
+                    {"action": "flip", "from": [5, 10], "orientation": "horizontal"},
+                    {"action": "flip", "from": [4, 10], "orientation": "horizontal"},
+                    {"action": "flip", "from": [3, 10], "orientation": "horizontal"},
+                    {"action": "flip", "from": [8, 11], "orientation": "horizontal"},
+                    {"action": "move", "from": [8, 11], "to": [12, 0]},
+                    {"action": "move", "from": [7, 11], "to": [8, 0]},
+                    {"action": "flip", "from": [8, 0], "orientation": "vertical"},
+                    {"action": "move", "from": [3, 10], "to": [8, 2]},
+                    {"action": "move", "from": [4, 10], "to": [4, 2]},
+                    {"action": "move", "from": [5, 10], "to": [5, 2]},
+                    {"action": "move", "from": [6, 10], "to": [6, 2]},
+                    {"action": "move", "from": [7, 10], "to": [7, 2]},
+                    {"action": "flip", "from": [4, 2]},
+                    {"action": "flip", "from": [5, 2]},
+                    {"action": "flip", "from": [6, 2]},
+                    {"action": "flip", "from": [7, 2]},
+                    {"action": "flip", "from": [8, 2]},
+                ],
+                17: [
+                    {"action": "flip", "from": [10, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [11, 12], "orientation": "vertical"},
+                    {"action": "move", "from": [11, 12], "to": [14, 12]},
+                    {"action": "flip", "from": [9, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [8, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [7, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [6, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [5, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [4, 12], "orientation": "horizontal"},
+                    {"action": "flip", "from": [10, 13], "orientation": "horizontal"},
+                    {"action": "move", "from": [10, 13], "to": [14, 0]},
+                    {"action": "move", "from": [9, 13], "to": [9, 0]},
+                    {"action": "flip", "from": [9, 0], "orientation": "vertical"},
+                    {"action": "move", "from": [4, 12], "to": [9, 2]},
+                    {"action": "move", "from": [5, 12], "to": [5, 2]},
+                    {"action": "move", "from": [6, 12], "to": [6, 2]},
+                    {"action": "move", "from": [7, 12], "to": [7, 2]},
+                    {"action": "move", "from": [8, 12], "to": [8, 2]},
+                    {"action": "move", "from": [9, 12], "to": [10, 2]},
+                    {"action": "flip", "from": [5, 2]},
+                    {"action": "flip", "from": [6, 2]},
+                    {"action": "flip", "from": [7, 2]},
+                    {"action": "flip", "from": [8, 2]},
+                    {"action": "flip", "from": [9, 2]},
+                    {"action": "flip", "from": [10, 2]},
+                ],
+            },
+        }
+
+        return PREDEFINED_MOVES_ATTACK.get(self.player, {}).get(rows, []).copy()
 
     @staticmethod
     def check_if_move_applicable(board, player: str, move: Dict[str, Any]) -> bool:
