@@ -245,10 +245,8 @@ class BaseAgent(ABC):
 
 class StudentAgent(BaseAgent):
     """
-    Flank-attack scripted opening with final 'make stones in SA' step.
-    - Works for small/medium/large (SA width 4/5/6).
-    - Mirrors for left/right flank via `edge`.
-    - Circle (up) & Square (down) row math fixed.
+    
+    - Generate pre-computed attack moves
     """
 
     def __init__(self, player: str, edge: str = "right"):
@@ -269,7 +267,7 @@ class StudentAgent(BaseAgent):
     ) -> Optional[Dict[str, Any]]:
 
         if self._plan is None:
-            edge = self.edge  # respect requested flank for both players
+            edge = self.edge
             self._plan, total = self.generate_initial_attacking_plan(
                 self.player, rows, cols, score_cols, edge=edge
             )
@@ -280,10 +278,10 @@ class StudentAgent(BaseAgent):
                 self._plan_printed = True
             self._i = 0
 
-        # play next applicable step; skip stale ones
+        # play next applicable move from attack-plan; skip stale ones
         while self._plan is not None and self._i < len(self._plan):
             m = self._plan[self._i]
-            if self._looks_applicable(board, self.player, m):
+            if self.check_if_move_applicable(board, self.player, m):
                 self._i += 1
                 return m
             self._i += 1
@@ -296,7 +294,7 @@ class StudentAgent(BaseAgent):
         return random.choice(flips or moves)
 
     @staticmethod
-    def _looks_applicable(board, player: str, move: Dict[str, Any]) -> bool:
+    def check_if_move_applicable(board, player: str, move: Dict[str, Any]) -> bool:
         fr = move.get("from")
         if not fr or not isinstance(fr, (list, tuple)) or len(fr) != 2:
             return True
@@ -306,15 +304,14 @@ class StudentAgent(BaseAgent):
         p = board[fy][fx]
         return bool(p and p.owner == player)
 
-    # ---------------- Opening generator (O(1)) ----------------
+    # ---------------- Generate opening attack moves ----------------
     @staticmethod
     def generate_initial_attacking_plan(
         player: str, rows: int, cols: int, score_cols: List[int], edge: str = "right"
     ) -> Tuple[List[Dict[str, Any]], int]:
         """
-        Single-flank rush with final 'flip to stone' for any rivers that enter SA.
-        Mirrors for left/right; adapts for circle/square and SA width 4/5/6.
-        Assumes default_start_board().
+         - Single-flank rush with finally flip the rivers to stones for any rivers that enter SA.
+         - Mirrors for left/right flanks
         """
         # geometry
         p = cols
@@ -323,23 +320,23 @@ class StudentAgent(BaseAgent):
         edge_x = (cols - 1) if right_flank else 0
 
         # Row layout
+        # circle (Bottom Up)
         if player == "circle":
-            horiz_row = rows - 4      # e.g., 9 (lower back row)
-            vert_row  = rows - 5      # e.g., 8 (upper back row)
+            horiz_row = rows - 4
+            vert_row  = rows - 5
             board_edge_row = 0
-        else:  # square
-            horiz_row = 3             # EXACT rows you wanted
+        else:  # square (Top Down)
+            horiz_row = 3
             vert_row  = 4
             board_edge_row = rows - 1
 
         sa_row = top_score_row() if player == "circle" else bottom_score_row(rows)
 
-        # SA cells (left->right)
+        # SA cells (enter scoring area from left->right)
         sa_cols_sorted = sorted(score_cols)
         k = min(len(sa_cols_sorted), 6)
         sa_targets = [(sa_cols_sorted[i], sa_row) for i in range(k)]
 
-        # helper to bias columns toward the chosen flank
         def lane(off_from_anchor_toward_flank: int) -> int:
             return x_anchor + (off_from_anchor_toward_flank * (+1 if right_flank else -1))
 
@@ -352,12 +349,12 @@ class StudentAgent(BaseAgent):
         V1 = lane(-1)
         V2 = lane(0)
 
-        # Extras for larger boards
-        extra1 = lane(-3)   # inner source when k>=4
-        extra2 = lane(+1)   # for k>=6
+        # Extra anchor pieces for larger boards
+        extra1 = lane(-3)   # when k>=4
+        extra2 = lane(+1)   # when k>=6
 
         moves: List[Dict[str, Any]] = []
-        sa_river_to_flip: List[Tuple[int, int]] = []  # <-- SA cells that will contain rivers to flip later
+        sa_river_to_flip: List[Tuple[int, int]] = []  # store the SA cells that will contain rivers to needs to be flip later
 
         def flip_h(col: int, row: int):
             moves.append({"action": "flip", "from": [col, row], "orientation": "horizontal"})
@@ -371,36 +368,34 @@ class StudentAgent(BaseAgent):
         def mv(fr: Tuple[int, int], to: Tuple[int, int]):
             moves.append({"action": "move", "from": [fr[0], fr[1]], "to": [to[0], to[1]]})
 
-        # ---- Phase A: flips (match your examples) ----
-        flip_h(D, horiz_row)  # river
-        flip_h(E, horiz_row)  # river
-        flip_h(F, horiz_row)  # river
-        flip_v(V1, vert_row)  # river
-        flip_v(V2, vert_row)  # river
+        # ---- Phase A: flips ----
+        flip_h(D, horiz_row)
+        flip_h(E, horiz_row)
+        flip_h(F, horiz_row)
+        flip_v(V1, vert_row)
+        flip_v(V2, vert_row)
 
-        # ---- Phase B: stream setup ----
+        # ---- Phase B: setup river flow on the flank ----
         # V2 -> flank contact on horizontal row
         mv((V2, vert_row), (edge_x, horiz_row))
         # F  -> board edge row (trunk far end)
         mv((F, horiz_row), (edge_x, board_edge_row))
-        # V1 -> its OWN column at the board edge row, then rotate to keep as feeder (not SA yet)
+        # V1 -> its own column at the board edge row, then rotate to keep as feeder (not SA yet)
         mv((V1, vert_row), (V1, board_edge_row))
         rotate_here((V1, board_edge_row))
 
-        # ---- Phase C: feed SA in your order ----
-        # near-flank SA index
+        # ---- Phase C: feed into SA ----
         idx_near_flank = 1 if right_flank else (k - 2)
         if 0 <= idx_near_flank < k:
             tgt = sa_targets[idx_near_flank]
-            mv((E, horiz_row), tgt)         # E was flipped to river
+            mv((E, horiz_row), tgt)
             sa_river_to_flip.append(tgt)    # mark for final stone flip
 
-        # inner-most from extra1 (usually stone -> no flip)
+        # inner-most from extra1 (usually stone, doesn't require flip)
         if k >= 4:
             inner_idx = 0 if right_flank else (k - 1)
             mv((extra1, horiz_row), sa_targets[inner_idx])
 
-        # far-inner via vertical-row offset from E’s col (likely stone -> no flip)
         from_col = E - 1 if right_flank else E + 1
         if 0 <= from_col < cols:
             far_inner_idx = 0 if right_flank else (k - 1)
@@ -432,17 +427,15 @@ class StudentAgent(BaseAgent):
 
         if remaining:
             tgt_far = sorted(remaining, key=lambda t: abs(t[0] - edge_x))[0]
-            mv((edge_x, board_edge_row), tgt_far) # source is F river at far edge
-            sa_river_to_flip.append(tgt_far)      # flip later to stone
+            mv((edge_x, board_edge_row), tgt_far)
+            sa_river_to_flip.append(tgt_far)
             remaining.remove(tgt_far)
 
         if k >= 6 and remaining:
-            # extra2 is a stone source (we did not flip it), so no flip needed
             mv((extra2, horiz_row), remaining[0])
             remaining.pop(0)
 
         # ---- Phase D: FINALIZE — flip any rivers that entered SA to STONE ----
-        # (Orientation not needed for stone; {'action':'flip','from':[..]} toggles river->stone.)
         for (fx, fy) in sa_river_to_flip:
             moves.append({"action": "flip", "from": [fx, fy]})
 
