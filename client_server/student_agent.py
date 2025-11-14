@@ -131,29 +131,9 @@ def get_river_flow_path(board, start_x, start_y, player, rows, cols, came_x, cam
             
         if river_piece.orientation == "horizontal":
             directions = [(1, 0), (-1, 0)]
-            next_x_1, next_y_1 = river_x + 0, river_y + 1
-            next_x_2, next_y_2 = river_x + 0, river_y + -1
-            if in_bounds(next_x_1, next_y_1, rows, cols) and not is_opponent_score_area(next_x_1, next_y_1, player, rows, cols):
-                piece = board[next_y_1][next_x_1]
-                if piece and piece.side == "river" and piece.orientation == "vertical":
-                        directions.append((0, 1))  # Fixed: use append instead of extend for single element
-            if in_bounds(next_x_2, next_y_2, rows, cols) and not is_opponent_score_area(next_x_2, next_y_2, player, rows, cols):
-                piece = board[next_y_2][next_x_2]
-                if piece and piece.side == "river" and piece.orientation == "vertical":
-                        directions.append((0, -1))  # Fixed: use append instead of extend
         else:
             directions = [(0, 1), (0, -1)]
-            next_x_1, next_y_1 = river_x + 1, river_y + 0
-            next_x_2, next_y_2 = river_x + -1, river_y + 0
-            if in_bounds(next_x_1, next_y_1, rows, cols) and not is_opponent_score_area(next_x_1, next_y_1, player, rows, cols):
-                piece = board[next_y_1][next_x_1]
-                if piece and piece.side == "river" and piece.orientation == "horizontal":  # Fixed: should be horizontal, not vertical
-                        directions.append((1, 0))
-            if in_bounds(next_x_2, next_y_2, rows, cols) and not is_opponent_score_area(next_x_2, next_y_2, player, rows, cols):
-                piece = board[next_y_2][next_x_2]
-                if piece and piece.side == "river" and piece.orientation == "horizontal":  # Fixed: should be horizontal, not vertical
-                        directions.append((-1, 0))
-            
+
         for dx, dy in directions:
             next_x, next_y = river_x + dx, river_y + dy
             
@@ -231,30 +211,9 @@ def get_river_push_targets(board: List[List[Any]], push_x: int, push_y: int,
     if not river_piece or river_piece.side != "river":
         return targets
     
-    # Determine push direction based on river orientation
-    if river_piece.orientation == "horizontal":
-        # Can push left or right
-        directions = [(1, 0), (-1, 0)]
-    else:  # vertical
-        # Can push up or down
-        directions = [(0, 1), (0, -1)]
-    
-    for dx, dy in directions:
-        current_x, current_y = push_x + dx, push_y + dy
-        
-        while in_bounds(current_x, current_y, rows, cols):
-            # Stop if entering opponent's scoring area for the pushed piece
-            if is_opponent_score_area(current_x, current_y, pushed_piece.owner, rows, cols):
-                break
-                
-            # If cell is empty, valid push destination
-            if board[current_y][current_x] is None:
-                targets.append((current_x, current_y))
-                current_x += dx
-                current_y += dy
-            else:
-                # Hit another piece - stop
-                break
+    targets.append((pusher_x, pusher_y))
+    river_flow = get_river_flow_path(board, pusher_x, pusher_y, player, rows, cols, push_x, push_y)
+    targets.extend(river_flow)
     
     return targets
 
@@ -296,7 +255,6 @@ def generate_regular_moves(board: List[List[Any]], piece_x: int, piece_y: int,
                     "from": [piece_x, piece_y],
                     "to": [dest_x, dest_y]
                 })
-    print(moves)
     return moves
 
 def generate_push_moves(board: List[List[Any]], piece_x: int, piece_y: int,
@@ -313,22 +271,25 @@ def generate_push_moves(board: List[List[Any]], piece_x: int, piece_y: int,
         
         if not in_bounds(push_x, push_y, rows, cols):
             continue
+
+        if is_opponent_score_area(push_x, push_y, player, rows, cols):
+            continue
             
         target_piece = board[push_y][push_x]
         if not target_piece:
             continue
             
-        # Stone pushing (can push any piece type)
-        if piece.side == "stone":
-            push_targets = get_stone_push_targets(board, push_x, push_y, dx, dy, 
-                                                 target_piece.owner, rows, cols)
-            for target_x, target_y in push_targets:
-                pushes.append({
-                    "action": "push",
-                    "from": [piece_x, piece_y],
-                    "to": [push_x, push_y],
-                    "pushed_to": [target_x, target_y]
-                })
+        # Stone pushing (can only push stones)
+        if piece.side == "stone" and target_piece.side == "stone":
+                push_targets = get_stone_push_targets(board, push_x, push_y, dx, dy, 
+                                                     target_piece.owner, rows, cols)
+                for target_x, target_y in push_targets:
+                    pushes.append({
+                        "action": "push",
+                        "from": [piece_x, piece_y],
+                        "to": [push_x, push_y],
+                        "pushed_to": [target_x, target_y]
+                    })
         
         # River pushing - can only push STONES
         elif piece.side == "river" and target_piece.side == "stone":
@@ -592,6 +553,7 @@ class StudentAgent(BaseAgent):
                 #     print("Attack Move Not possible, invoking minimax =", am)
 
         # 4) Fallback: minimax else random
+        print("onto mini max")
         best_move = get_minimax_move(board, self.player, rows, cols, score_cols, self.move_history)
         if best_move:
             self.move_history.append(best_move)
@@ -621,7 +583,8 @@ class StudentAgent(BaseAgent):
                     {"action": "flip", "from": [4, 3], "orientation": "horizontal"},
                     {"action": "flip", "from": [5, 3], "orientation": "horizontal"},
                     {"action": "move", "from": [5, 3], "to": [3, 3]},
-                    {"action": "move", "from": [4, 3], "to": [3, 1]},
+                    {"action": "move", "from": [3, 3], "to": [3, 1]},
+                    {"action": "move", "from": [4, 3], "to": [3, 3]},
                     {"action": "move", "from": [3, 3], "to": [6, 1]},
                     {"action": "move", "from": [3, 1], "to": [4, 1]},
                 ],
@@ -633,10 +596,10 @@ class StudentAgent(BaseAgent):
                     {"action": "flip", "from": [4, 3], "orientation": "horizontal"},
                     {"action": "flip", "from": [5, 3], "orientation": "horizontal"},
                     {"action": "move", "from": [5, 3], "to": [3, 3]},
-                    {"action": "move", "from": [4, 3], "to": [3, 1]},
+                    {"action": "move", "from": [3, 3], "to": [3, 1]},
+                    {"action": "move", "from": [4, 3], "to": [3, 3]},
                     {"action": "move", "from": [3, 3], "to": [7, 1]},
                     {"action": "move", "from": [3, 1], "to": [4, 1]},
-                    {"action": "move", "from": [4, 1], "to": [5, 1]},
                 ],
                 17: [
                     {"action": "flip", "from": [4, 3], "orientation": "vertical"},
@@ -647,8 +610,10 @@ class StudentAgent(BaseAgent):
                     {"action": "flip", "from": [6, 3], "orientation": "horizontal"},
                     {"action": "flip", "from": [7, 3], "orientation": "horizontal"},
                     {"action": "move", "from": [7, 3], "to": [4, 3]},
-                    {"action": "move", "from": [6, 3], "to": [4, 1]},
-                    {"action": "move", "from": [5, 3], "to": [9, 1]},
+                    {"action": "move", "from": [4, 3], "to": [4, 1]},
+                    {"action": "move", "from": [6, 3], "to": [4, 3]},
+                    {"action": "move", "from": [4, 3], "to": [9, 1]},
+                    {"action": "move", "from": [5, 3], "to": [4, 3]},
                     {"action": "move", "from": [4, 3], "to": [7, 1]},
                     {"action": "move", "from": [4, 1], "to": [5, 1]},
                 ],
@@ -662,7 +627,8 @@ class StudentAgent(BaseAgent):
                     {"action": "flip", "from": [4, 9], "orientation": "horizontal"},
                     {"action": "flip", "from": [5, 9], "orientation": "horizontal"},
                     {"action": "move", "from": [5, 9], "to": [3, 9]},
-                    {"action": "move", "from": [4, 9], "to": [3, 11]},
+                    {"action": "move", "from": [3, 9], "to": [3, 11]},
+                    {"action": "move", "from": [4, 9], "to": [3, 9]},
                     {"action": "move", "from": [3, 9], "to": [6, 11]},
                     {"action": "move", "from": [3, 11], "to": [4, 11]},
                 ],
@@ -674,7 +640,8 @@ class StudentAgent(BaseAgent):
                     {"action": "flip", "from": [4, 11], "orientation": "horizontal"},
                     {"action": "flip", "from": [5, 11], "orientation": "horizontal"},
                     {"action": "move", "from": [5, 11], "to": [3, 11]},
-                    {"action": "move", "from": [4, 11], "to": [3, 13]},
+                    {"action": "move", "from": [3, 11], "to": [3, 13]},
+                    {"action": "move", "from": [4, 11], "to": [3, 11]},
                     {"action": "move", "from": [3, 11], "to": [7, 13]},
                     {"action": "move", "from": [3, 13], "to": [4, 13]},
                     {"action": "move", "from": [4, 13], "to": [5, 13]},
@@ -688,8 +655,10 @@ class StudentAgent(BaseAgent):
                     {"action": "flip", "from": [6, 13], "orientation": "horizontal"},
                     {"action": "flip", "from": [7, 13], "orientation": "horizontal"},
                     {"action": "move", "from": [7, 13], "to": [4, 13]},
-                    {"action": "move", "from": [6, 13], "to": [4, 15]},
-                    {"action": "move", "from": [5, 13], "to": [9, 15]},
+                    {"action": "move", "from": [4, 13], "to": [4, 15]},
+                    {"action": "move", "from": [6, 13], "to": [4, 13]},
+                    {"action": "move", "from": [4, 13], "to": [9, 15]},
+                    {"action": "move", "from": [5, 13], "to": [4, 13]},
                     {"action": "move", "from": [4, 13], "to": [7, 15]},
                     {"action": "move", "from": [4, 15], "to": [5, 15]},
                 ],
@@ -1317,6 +1286,7 @@ def selective_action_generation(board, player, rows, cols, score_cols):
     return ordered_moves
 
 def minimax_search(board, depth, alpha, beta, maximizing_player, player, rows, cols, score_cols, history):
+    print(3)
     """Alpha-beta minimax recursive search."""
     if depth == 0:
         return minimax_evaluate_board(board, player, rows, cols, score_cols), None
@@ -1376,8 +1346,7 @@ def minimax_search(board, depth, alpha, beta, maximizing_player, player, rows, c
 def get_minimax_move(board, player, rows, cols, score_cols, history, depth=2):
     """Top-level helper to call minimax and prevent oscillations."""
     # Import math if not already imported
-    import math
-    
+    print(1)
     eval_val, best_move = minimax_search(
         board, depth, -math.inf, math.inf, True, 
         player, rows, cols, score_cols, history
@@ -1406,7 +1375,7 @@ def get_minimax_move(board, player, rows, cols, score_cols, history, depth=2):
             
             if second_best_move:
                 best_move = second_best_move
-
+    print(2)
     return best_move
 
 
