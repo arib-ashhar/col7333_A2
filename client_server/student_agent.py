@@ -20,6 +20,7 @@ import copy
 from typing import List, Dict, Any, Optional, Tuple
 from abc import ABC, abstractmethod
 from collections import deque
+import math
 
 # ==================== GAME UTILITIES ====================
 # Essential utility functions for game state analysis
@@ -60,6 +61,30 @@ def get_opponent(player: str) -> str:
     """Get the opponent player identifier."""
     return "square" if player == "circle" else "circle"
 
+def is_opponent_score_area(x: int, y: int, player: str, rows: int, cols: int) -> bool:
+    """Check if a cell is in the opponent's scoring area."""
+    score_cols = score_cols_for(cols)
+    if player == "circle":
+        return (y == get_bottom_score_row(rows)) and (x in score_cols)
+    else:
+        return (y == get_top_score_row()) and (x in score_cols)
+
+def is_own_score_area(x: int, y: int, player: str, rows: int, cols: int) -> bool:
+    """Check if a cell is in the player's own scoring area."""
+    score_cols = score_cols_for(cols)
+    if player == "circle":
+        return (y == get_top_score_row()) and (x in score_cols)
+    else:
+        return (y == get_bottom_score_row(rows)) and (x in score_cols)
+
+def get_top_score_row() -> int:
+    """Get the row index for Circle's scoring area (top)."""
+    return 2
+
+def get_bottom_score_row(rows: int) -> int:
+    """Get the row index for Square's scoring area (bottom)."""
+    return rows - 3
+
 # ---------- helpers for "home SA" and guard row (outside SA) ----------
 def home_sa_row(player: str, rows: int) -> int:
     """
@@ -68,6 +93,13 @@ def home_sa_row(player: str, rows: int) -> int:
     - Circle defends BOTTOM SA.
     """
     return top_score_row() if player == "square" else bottom_score_row(rows)
+
+def my_scoring_row(player: str, rows: int) -> int:
+    """
+    The row where *I* must score (i.e., opponent's SA).
+    circle scores at bottom; square scores at top.
+    """
+    return top_score_row(rows) if player == "circle" else bottom_score_row(rows)
 
 def guard_row_outside(player: str, rows: int) -> int:
     """
@@ -84,85 +116,327 @@ def guard_row_outside(player: str, rows: int) -> int:
 
 # ==================== MOVE GENERATION HELPERS ====================
 
-def get_valid_moves_for_piece(board, x: int, y: int, player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
+def get_river_flow_path(board: List[List[Any]], start_x: int, start_y: int, 
+                       player: str, rows: int, cols: int) -> List[Tuple[int, int]]:
     """
-    Generate all valid moves for a specific piece.
-    
-    Args:
-        board: Current board state
-        x, y: Piece position
-        player: Current player
-        rows, cols: Board dimensions
-        score_cols: Scoring column indices
-    
-    Returns:
-        List of valid move dictionaries
+    Get all possible destinations when moving along a river's flow direction.
+    This handles the sliding movement along rivers.
     """
+    destinations = []
+    visited = set()
+    
+    def explore_direction(dx: int, dy: int):
+        """Explore movement in one direction along rivers."""
+        x, y = start_x + dx, start_y + dy
+        
+        while in_bounds(x, y, rows, cols):
+            if (x, y) in visited:
+                break
+            visited.add((x, y))
+            
+            # Stop if entering opponent's scoring area
+            if is_opponent_score_area(x, y, player, rows, cols):
+                break
+                
+            cell = board[y][x]
+            
+            # Empty cell - valid destination
+            if cell is None:
+                destinations.append((x, y))
+                x += dx
+                y += dy
+                continue
+                
+            # Hit a stone - stop
+            if cell.side == "stone":
+                break
+                
+            # Hit another river - change direction and continue
+            if cell.side == "river":
+                if cell.orientation == "horizontal":
+                    # Change to horizontal movement
+                    new_dx = 1 if dx > 0 else -1 if dx < 0 else (1 if x > start_x else -1)
+                    new_dy = 0
+                else:  # vertical
+                    # Change to vertical movement
+                    new_dx = 0
+                    new_dy = 1 if dy > 0 else -1 if dy < 0 else (1 if y > start_y else -1)
+                
+                # Continue with new direction
+                dx, dy = new_dx, new_dy
+                x += dx
+                y += dy
+            else:
+                break
+    
+    # Get starting river piece
+    start_piece = board[start_y][start_x]
+    if not start_piece or start_piece.side != "river":
+        return destinations
+    
+    # Explore both flow directions
+    if start_piece.orientation == "horizontal":
+        explore_direction(1, 0)   # Right
+        explore_direction(-1, 0)  # Left
+    else:  # vertical
+        explore_direction(0, 1)   # Down
+        explore_direction(0, -1)  # Up
+    
+    return destinations
+
+# ==================== PUSH MOVEMENT GENERATION ====================
+
+def get_stone_push_targets(board: List[List[Any]], push_x: int, push_y: int, 
+                          push_dx: int, push_dy: int, player: str, rows: int, cols: int) -> List[Tuple[int, int]]:
+    """
+    Get valid push targets for stone pushing.
+    Stone can push exactly one space in the same direction.
+    """
+    targets = []
+    
+    # Calculate push destination
+    dest_x, dest_y = push_x + push_dx, push_y + push_dy
+    
+    # Check if push is valid
+    if (in_bounds(dest_x, dest_y, rows, cols) and
+        board[dest_y][dest_x] is None and
+        not is_opponent_score_area(dest_x, dest_y, player, rows, cols)):
+        targets.append((dest_x, dest_y))
+    
+    return targets
+
+def get_river_push_targets(board: List[List[Any]], push_x: int, push_y: int,
+                          pusher_x: int, pusher_y: int, player: str, rows: int, cols: int) -> List[Tuple[int, int]]:
+    """
+    Get valid push targets for river pushing.
+    River can push any distance along its flow direction.
+    """
+    targets = []
+    
+    # Get the piece being pushed - MUST BE A STONE, not a river
+    pushed_piece = board[push_y][push_x]
+    if not pushed_piece or pushed_piece.side != "stone":  # Only stones can be pushed by rivers
+        return targets
+    
+    # Use river movement logic for the pushed piece
+    # Temporarily remove the pusher to calculate movement
+    temp_board = copy.deepcopy(board)
+    temp_board[pusher_y][pusher_x] = None
+    
+    # Get all possible push destinations using river movement
+    push_destinations = get_river_flow_path(temp_board, push_x, push_y, 
+                                           pushed_piece.owner, rows, cols)
+    
+    for dest in push_destinations:
+        # Check if destination is valid (empty and not in opponent's scoring area for pushed piece)
+        if (board[dest[1]][dest[0]] is None and
+            not is_opponent_score_area(dest[0], dest[1], pushed_piece.owner, rows, cols)):
+            targets.append(dest)
+    
+    return targets
+
+def generate_push_moves(board: List[List[Any]], piece_x: int, piece_y: int,
+                       player: str, rows: int, cols: int) -> List[Dict[str, Any]]:
+    """Generate all push moves for a piece."""
+    pushes = []
+    piece = board[piece_y][piece_x]
+    
+    # Check all adjacent cells for pieces to push
+    for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        push_x, push_y = piece_x + dx, piece_y + dy
+        
+        if not in_bounds(push_x, push_y, rows, cols):
+            continue
+            
+        target_piece = board[push_y][push_x]
+        if not target_piece:
+            continue
+        
+        # Stone pushing - can push stones or rivers
+        if piece.side == "stone":
+            # Stones can push both stones and rivers
+            push_targets = get_stone_push_targets(board, push_x, push_y, dx, dy, 
+                                                 target_piece.owner, rows, cols)
+            for target_x, target_y in push_targets:
+                pushes.append({
+                    "action": "push",
+                    "from": [piece_x, piece_y],
+                    "to": [push_x, push_y],
+                    "pushed_to": [target_x, target_y]
+                })
+        
+        # River pushing - can only push STONES, not rivers
+        elif piece.side == "river" and target_piece.side == "stone":  # Only push stones
+            push_targets = get_river_push_targets(board, push_x, push_y, piece_x, piece_y,
+                                                 player, rows, cols)
+            for target_x, target_y in push_targets:
+                pushes.append({
+                    "action": "push",
+                    "from": [piece_x, piece_y],
+                    "to": [push_x, push_y],
+                    "pushed_to": [target_x, target_y]
+                })
+    
+    return pushes
+
+# ==================== COMPLETE MOVE GENERATION ====================
+
+def generate_regular_moves(board: List[List[Any]], piece_x: int, piece_y: int,
+                          player: str, rows: int, cols: int) -> List[Dict[str, Any]]:
+    """Generate all regular movement moves for a piece."""
     moves = []
-    piece = board[y][x]
+    piece = board[piece_y][piece_x]
     
-    if piece is None or piece.owner != player:
-        return moves
-    
-    directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-    
-    if piece.side == "stone":
-        # Stone movement
-        for dx, dy in directions:
-            nx, ny = x + dx, y + dy
-            if not in_bounds(nx, ny, rows, cols):
-                continue
-            
-            if is_opponent_score_cell(nx, ny, player, rows, cols, score_cols):
-                continue
-            
-            if board[ny][nx] is None:
-                # Simple move
-                moves.append({"action": "move", "from": [x, y], "to": [nx, ny]})
-            elif board[ny][nx].owner != player:
-                # Push move
-                px, py = nx + dx, ny + dy
-                if (in_bounds(px, py, rows, cols) and 
-                    board[py][px] is None and 
-                    not is_opponent_score_cell(px, py, player, rows, cols, score_cols)):
-                    moves.append({"action": "push", "from": [x, y], "to": [nx, ny], "pushed_to": [px, py]})
+    # Check all adjacent cells
+    for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        target_x, target_y = piece_x + dx, piece_y + dy
         
-        # Stone to river flips
-        for orientation in ["horizontal", "vertical"]:
-            moves.append({"action": "flip", "from": [x, y], "orientation": orientation})
-    
-    else:  # River piece
-        # River to stone flip
-        moves.append({"action": "flip", "from": [x, y]})
+        if not in_bounds(target_x, target_y, rows, cols):
+            continue
+            
+        # Cannot move into opponent's scoring area
+        if is_opponent_score_area(target_x, target_y, player, rows, cols):
+            continue
+            
+        target_cell = board[target_y][target_x]
         
-        # River rotation
-        moves.append({"action": "rotate", "from": [x, y]})
+        if target_cell is None:
+            # Empty cell - regular move
+            moves.append({
+                "action": "move",
+                "from": [piece_x, piece_y],
+                "to": [target_x, target_y]
+            })
+        elif target_cell.side == "river":
+            # River movement - slide along river flow
+            river_destinations = get_river_flow_path(board, target_x, target_y, player, rows, cols)
+            for dest_x, dest_y in river_destinations:
+                moves.append({
+                    "action": "move",
+                    "from": [piece_x, piece_y],
+                    "to": [dest_x, dest_y]
+                })
     
     return moves
 
-def generate_all_moves(board: List[List[Any]], player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
+def generate_push_moves(board: List[List[Any]], piece_x: int, piece_y: int,
+                       player: str, rows: int, cols: int) -> List[Dict[str, Any]]:
+    """Generate all push moves for a piece."""
+    pushes = []
+    piece = board[piece_y][piece_x]
+    
+    # Check all adjacent cells for pieces to push
+    for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        push_x, push_y = piece_x + dx, piece_y + dy
+        
+        if not in_bounds(push_x, push_y, rows, cols):
+            continue
+            
+        target_piece = board[push_y][push_x]
+        if not target_piece:
+            continue
+            
+        # Stone pushing
+        if piece.side == "stone":
+            push_targets = get_stone_push_targets(board, push_x, push_y, dx, dy, 
+                                                 target_piece.owner, rows, cols)
+            for target_x, target_y in push_targets:
+                pushes.append({
+                    "action": "push",
+                    "from": [piece_x, piece_y],
+                    "to": [push_x, push_y],
+                    "pushed_to": [target_x, target_y]
+                })
+        
+        # River pushing
+        elif piece.side == "river":
+            push_targets = get_river_push_targets(board, push_x, push_y, piece_x, piece_y,
+                                                 player, rows, cols)
+            for target_x, target_y in push_targets:
+                pushes.append({
+                    "action": "push",
+                    "from": [piece_x, piece_y],
+                    "to": [push_x, push_y],
+                    "pushed_to": [target_x, target_y]
+                })
+    
+    return pushes
+
+def generate_flip_moves(board: List[List[Any]], piece_x: int, piece_y: int) -> List[Dict[str, Any]]:
+    """Generate all flip moves for a piece."""
+    flips = []
+    piece = board[piece_y][piece_x]
+    
+    if piece.side == "stone":
+        # Stone can flip to river with either orientation
+        for orientation in ["horizontal", "vertical"]:
+            flips.append({
+                "action": "flip",
+                "from": [piece_x, piece_y],
+                "orientation": orientation
+            })
+    else:  # river
+        # River can flip to stone (no orientation needed)
+        flips.append({
+            "action": "flip",
+            "from": [piece_x, piece_y]
+        })
+    
+    return flips
+
+def generate_rotate_moves(board: List[List[Any]], piece_x: int, piece_y: int) -> List[Dict[str, Any]]:
+    """Generate rotate moves for a river piece."""
+    rotates = []
+    piece = board[piece_y][piece_x]
+    
+    if piece and piece.side == "river":
+        rotates.append({
+            "action": "rotate",
+            "from": [piece_x, piece_y]
+        })
+    
+    return rotates
+
+def generate_moves_for_piece(board: List[List[Any]], piece_x: int, piece_y: int,
+                            player: str, rows: int, cols: int) -> List[Dict[str, Any]]:
+    """Generate all valid moves for a specific piece."""
+    piece = board[piece_y][piece_x]
+    if not piece or piece.owner != player:
+        return []
+    
+    all_moves = []
+    
+    # Generate different types of moves
+    all_moves.extend(generate_regular_moves(board, piece_x, piece_y, player, rows, cols))
+    all_moves.extend(generate_push_moves(board, piece_x, piece_y, player, rows, cols))
+    all_moves.extend(generate_flip_moves(board, piece_x, piece_y))
+    all_moves.extend(generate_rotate_moves(board, piece_x, piece_y))
+    
+    return all_moves
+
+def generate_all_valid_moves(board: List[List[Any]], player: str, rows: int, cols: int) -> List[Dict[str, Any]]:
     """
-    Generate all legal moves for the current player.
+    Generate ALL valid moves for the current player on the given board.
     
     Args:
-        board: Current board state
+        board: 2D list representing the game board
         player: Current player ("circle" or "square")
-        rows, cols: Board dimensions
-        score_cols: Scoring column indices
+        rows: Number of rows in the board
+        cols: Number of columns in the board
     
     Returns:
-        List of all valid move dictionaries
+        List of all valid moves in dictionary format
     """
     all_moves = []
     
+    # Iterate through all board positions
     for y in range(rows):
         for x in range(cols):
-            piece = board[y][x]
-            if piece and piece.owner == player:
-                piece_moves = get_valid_moves_for_piece(board, x, y, player, rows, cols, score_cols)
-                all_moves.extend(piece_moves)
+            piece_moves = generate_moves_for_piece(board, x, y, player, rows, cols)
+            all_moves.extend(piece_moves)
     
     return all_moves
+
 
 # ==================== BOARD EVALUATION ====================
 
@@ -275,18 +549,18 @@ class StudentAgent(BaseAgent):
     def __init__(self, player: str, edge: str = "right"):
         super().__init__(player)
         self.edge = edge
-
-        # --- (keep fields but we won't use the attack plan for now) ---
-        self._plan: Optional[List[Dict[str, Any]]] = None
-        self._i: int = 0
-        self._plan_printed = False
-
-        # defense state
-        self.defense = None               # layout info (sa_row, guards, etc.)
-        self.restore_queue = deque()      # flips to restore guards after push
-        self._def_setup_done = False      # whether we ran the initial scripted defense plan
-        self._def_setup_plan: List[Dict[str, Any]] = []
+        self.defense_is_valid = True
+        self.attack_is_valid = True
+        self._def_setup_done = False
+        self._def_setup_plan = []
         self._def_setup_idx = 0
+        self._atk_plan = None
+        self._atk_idx = 0
+        self._atk_printed = False
+        self.defense = None
+        self.restore_queue = deque() 
+        self.move_history = []
+        self.total_moves = 0
 
     # -------------------- PUBLIC: CHOOSE --------------------
     def choose(
@@ -298,6 +572,25 @@ class StudentAgent(BaseAgent):
         current_player_time: float,
         opponent_time: float,
     ) -> Optional[Dict[str, Any]]:
+
+        # helper to both return and count the move
+        def _return(m):
+            if m is not None:
+                self.total_moves += 1
+            return m
+
+        # 0B) ABSOLUTE HIGHEST PRIORITY when move count is large
+        # Flip any of *my* rivers already sitting in opponent SA to stones.
+        if self.total_moves >= 490:
+            m = self.endgame_force_flip_in_opp_sa(board, rows, cols, score_cols)
+            if m:
+                return _return(m)
+
+        # 0A) HIGHEST PRIORITY: if opponent SA is fully occupied by *my* pieces,
+        # flip the first river-side-up to a stone to lock the point.
+        m = self.finish_scoring_if_full(board, rows, cols, score_cols)
+        if m:
+            return _return(m)
 
         # ---- lazy init holders ----
         if not hasattr(self, "_def_setup_done"):
@@ -321,85 +614,49 @@ class StudentAgent(BaseAgent):
         # 1) INITIAL DEFENSE SCRIPT (one-time)
         if not self._def_setup_done:
             if not self._def_setup_plan:
-                # Your precomputed defensive opener (already implemented by you)
                 self._def_setup_plan = self.get_initial_defense_moves(rows, cols)
                 self._def_setup_idx = 0
-                # if self._def_setup_plan:
-                    # print(f"[{self.player}] Initial DEF plan ({rows}x{cols}, steps={len(self._def_setup_plan)}):")
-                    # for i, m in enumerate(self._def_setup_plan, 1):
-                        # print(f"{i:02d}. {m}")
 
-            # Play next applicable scripted defense move; skip stale ones
             while self._def_setup_idx < len(self._def_setup_plan):
                 m = self._def_setup_plan[self._def_setup_idx]
-                if self.check_if_move_applicable(board, self.player, m):
-                    self._def_setup_idx += 1
-                    return m
                 self._def_setup_idx += 1
+                return _return(m)
 
-            # Finished scripted defense
             self._def_setup_done = True
 
-        # 2) HIGH PRIORITY: REACTIVE DEFENSE (includes restores / pushes / alignments)
+        # 2) HIGH PRIORITY: REACTIVE DEFENSE
         dm = self.get_defensive_move(board, rows, cols, score_cols)
-        #print("defensive move: ", dm)
         if dm:
-            return dm
+            return _return(dm)
 
-        # 3) PREDEFINED ATTACK SCRIPT (runs only after initial defense is done)
+        # 3) PREDEFINED ATTACK SCRIPT
         if self._def_setup_done:
-            # Lazy init attack plan
             if self._atk_plan is None:
-                # Use your predefined attack book
                 if hasattr(self, "get_initial_attack_moves"):
                     self._atk_plan = self.get_initial_attack_moves(rows, cols)
                 else:
-                    # If you wrapped it differently, swap the call here
                     self._atk_plan = []
                 self._atk_idx = 0
-                if self._atk_plan and not self._atk_printed:
-                    # print(f"[{self.player}] Initial ATK plan ({rows}x{cols}, steps={len(self._atk_plan)}):")
-                    # for i, m in enumerate(self._atk_plan, 1):
-                        # print(f"{i:02d}. {m}")
-                    self._atk_printed = True
+                self._atk_printed = True
 
-            # While there are scripted attack moves left
-            if self._atk_plan:
-                # Before executing each attack step, re-check reactive defense (still higher priority)
-                dm2 = self.get_defensive_move(board, rows, cols, score_cols)
-                if dm2:
-                    return dm2
+            if self._atk_plan and self._atk_idx < len(self._atk_plan):
+                am = self._atk_plan[self._atk_idx]
+                if self.check_if_move_applicable(board, self.player, am, rows, cols):
+                    self._atk_idx += 1
+                    return _return(am)
+                # else:
+                #     print("Attack Move Not possible, invoking minimax =", am)
 
-                # Try current attack step ONLY; if not applicable -> return None (per requirement)
-                if self._atk_idx < len(self._atk_plan):
-                    am = self._atk_plan[self._atk_idx]
-                    if self.check_if_move_applicable(board, self.player, am):
-                        self._atk_idx += 1
-                        return am
-                    else:
-                        # TODO: attack step not currently feasible; handle re-planning/escalation later.
-                        # print("Attack Move Not possible, invoking minimax =", am)
-                        if not hasattr(self, "move_history"):
-                            self.move_history = []
-                        best_move = get_minimax_move(board, self.player, rows, cols, score_cols, self.move_history)
-                        if best_move:
-                            self.move_history.append(best_move)
-                            return best_move
-                        return None
-                # Attack plan exhausted -> fall through to fallback random
-
-        # 4) FALLBACK: any legal move (prefer flips)
-        # moves = generate_all_moves(board, self.player, rows, cols, score_cols)
-        # if not moves:
-        #     return None
-        # flips = [m for m in moves if m["action"] == "flip"]
-        # return random.choice(flips or moves)
-
-        best_move = get_minimax_move(board, self.player, rows, cols, score_cols, getattr(self, "move_history", []))
+        # 4) Fallback: minimax else random
+        best_move = get_minimax_move(board, self.player, rows, cols, score_cols, self.move_history)
         if best_move:
             self.move_history.append(best_move)
-            return best_move
-        return random.choice(flips or moves)
+            return _return(best_move)
+
+        all_moves = generate_all_valid_moves(board, self.player, rows, cols)
+        if all_moves:
+            return _return(random.choice(all_moves))
+        return None
 
     # -------------------- DEFENSE: get the precomputed defense moves based on piece type and board size --------------------
     def get_initial_defense_moves(self, rows: int, cols: int) -> List[Dict[str, Any]]:
@@ -660,15 +917,12 @@ class StudentAgent(BaseAgent):
         return PREDEFINED_MOVES_ATTACK.get(self.player, {}).get(rows, []).copy()
 
     @staticmethod
-    def check_if_move_applicable(board, player: str, move: Dict[str, Any]) -> bool:
-        fr = move.get("from")
-        if not fr or not isinstance(fr, (list, tuple)) or len(fr) != 2:
+    def check_if_move_applicable(board, player: str, move: Dict[str, Any], rows, cols) -> bool:
+        score_cols = score_cols_for(cols)
+        all_moves = generate_all_valid_moves(board, player, rows, cols)
+        if move in all_moves: 
             return True
-        fy = fr[1]; fx = fr[0]
-        if not in_bounds(fx, fy, len(board), len(board[0])):
-            return False
-        p = board[fy][fx]
-        return bool(p and p.owner == player)
+        return False
 
 
     # ---------- layout: two horizontal guard cells outside our SA ----------
@@ -771,7 +1025,7 @@ class StudentAgent(BaseAgent):
 
         def is_applicable(move):
             if hasattr(self, "check_if_move_applicable"):
-                return self.check_if_move_applicable(board, me, move)
+                return self.check_if_move_applicable(board, me, move, rows, cols)
             fr = move.get("from")
             if not fr: return True
             fx, fy = fr
@@ -890,197 +1144,326 @@ class StudentAgent(BaseAgent):
 
         # print("[DEF] no defensive action")
         return None
+    
+    # ---------- PRIORITY 0A: if all cells in opponent SA are mine, flip first river to stone ----------
+    def finish_scoring_if_full(self, board, rows, cols, score_cols) -> Optional[Dict[str, Any]]:
+        opp_sa_row = my_scoring_row(self.player, rows)
+
+        # Check that each scoring column on opponent SA is occupied by MY piece
+        for x in score_cols:
+            if not in_bounds(x, opp_sa_row, rows, cols):
+                return None  # board malformed
+            cell = board[opp_sa_row][x]
+            if not cell or getattr(cell, "owner", None) != self.player:
+                return None  # not fully filled by me
+
+        # All filled by me → flip the first river-side-up to stone
+        for x in score_cols:
+            cell = board[opp_sa_row][x]
+            if getattr(cell, "side", "") == "river":
+                # flip to stone (no orientation field needed)
+                return {"action": "flip", "from": [x, opp_sa_row]}
+        return None  # already all stones
+
+    # ---------- PRIORITY 0B (highest when triggered): after many moves, flip any of my rivers in opp SA ----------
+    def endgame_force_flip_in_opp_sa(self, board, rows, cols, score_cols) -> Optional[Dict[str, Any]]:
+        opp_sa_row = my_scoring_row(self.player, rows)
+        for x in score_cols:
+            if not in_bounds(x, opp_sa_row, rows, cols):
+                continue
+            cell = board[opp_sa_row][x]
+            if cell and getattr(cell, "owner", None) == self.player and getattr(cell, "side", "") == "river":
+                return {"action": "flip", "from": [x, opp_sa_row]}
+        return None
 
 
-    # -------------------- MINIMAX WITH ALPHA-BETA --------------------
-    def manhattan_distance(a, b):
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+# ==================== MINIMAX IMPLEMENTATION ====================
 
-    def min_manhattan_to_score(x, y, player, rows, cols, score_cols):
-        """Get min distance from (x,y) to that player's scoring area."""
-        if player == "circle":
-            score_y = top_score_row()
-        else:
-            score_y = bottom_score_row(rows)
-        return min(abs(y - score_y) + abs(x - sc) for sc in score_cols)
+def manhattan_distance(a, b):
+    """Calculate Manhattan distance between two points."""
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-    def evaluate_board(board, player, rows, cols, score_cols):
-        """Full evaluation function per your specification."""
-        opponent = get_opponent(player)
-        score = 0
+def min_manhattan_to_score(x, y, player, rows, cols, score_cols):
+    """Get min distance from (x,y) to that player's scoring area."""
+    if player == "circle":
+        score_y = top_score_row()
+    else:
+        score_y = bottom_score_row(rows)
+    return min(abs(y - score_y) + abs(x - sc) for sc in score_cols)
 
-        # pieces in scoring area
-        score += count_stones_in_scoring_area(board, player, rows, cols, score_cols) * 1000
-        score -= count_stones_in_scoring_area(board, opponent, rows, cols, score_cols) * 1000
+def minimax_evaluate_board(board, player, rows, cols, score_cols):
+    """Full evaluation function as per specification."""
+    opponent = get_opponent(player)
+    score = 0
 
-        # proximity counts
-        my_close, opp_close = 0, 0
-        my_to_opp, opp_to_me = 0, 0
-        for y in range(rows):
-            for x in range(cols):
-                p = board[y][x]
-                if not p:
+    # Pieces in scoring area
+    player_scoring_stones = count_stones_in_scoring_area(board, player, rows, cols, score_cols)
+    opponent_scoring_stones = count_stones_in_scoring_area(board, opponent, rows, cols, score_cols)
+    
+    score += player_scoring_stones * 1000
+    score -= opponent_scoring_stones * 1000
+
+    # Proximity counts
+    my_close, opp_close = 0, 0
+    my_to_opp, opp_to_me = 0, 0
+    
+    for y in range(rows):
+        for x in range(cols):
+            piece = board[y][x]
+            if not piece:
+                continue
+                
+            if piece.owner == player:
+                d_own = min_manhattan_to_score(x, y, player, rows, cols, score_cols)
+                d_opp = min_manhattan_to_score(x, y, opponent, rows, cols, score_cols)
+                if d_own <= 2: 
+                    my_close += 1
+                if d_opp <= 2: 
+                    my_to_opp += 1
+            else:
+                d_opp = min_manhattan_to_score(x, y, opponent, rows, cols, score_cols)
+                d_me = min_manhattan_to_score(x, y, player, rows, cols, score_cols)
+                if d_opp <= 2: 
+                    opp_close += 1
+                if d_me <= 2: 
+                    opp_to_me += 1
+
+    score += my_close * 500
+    score -= opp_close * 500
+    score += my_to_opp * 50
+    score -= opp_to_me * 50
+
+    return score
+
+def selective_action_generation(board, player, rows, cols, score_cols):
+    """Selective action generator as per the strategy document."""
+    moves = []
+    all_moves = generate_all_valid_moves(board, player, rows, cols)
+    opponent = get_opponent(player)
+
+    for move in all_moves:
+        from_pos = move.get("from")
+        if not from_pos:
+            continue
+        x, y = from_pos
+
+        # Region restrictions - handle deterministically
+        if player == "circle" and y >= rows - 2:
+            continue
+        if player == "square" and y <= 2:
+            continue
+
+        # Skip if piece is in own score area
+        if is_own_score_cell(x, y, player, rows, cols, score_cols):
+            continue
+
+        piece = board[y][x]
+        if not piece or piece.owner != player:
+            continue
+
+        # ---- Stone pieces ----
+        if piece.side == "stone":
+            # Find moves that go directly to score area
+            sa_moves = [m for m in all_moves 
+                    if m["action"] == "move" and m["from"] == [x, y] 
+                    and is_own_score_cell(m["to"][0], m["to"][1], player, rows, cols, score_cols)]
+            
+            if sa_moves:
+                chosen = random.choice(sa_moves)
+                moves.append(chosen)
+                # Add flip to horizontal after moving to score area
+                moves.append({
+                    "action": "flip", 
+                    "from": chosen["to"], 
+                    "orientation": "horizontal"
+                })
+            else:
+                # No direct score moves - flip to horizontal river
+                moves.append({
+                    "action": "flip", 
+                    "from": [x, y], 
+                    "orientation": "horizontal"
+                })
+
+        # ---- Vertical river pieces ----
+        elif piece.side == "river" and piece.orientation == "vertical":
+            # Find moves that go directly to score area
+            sa_moves = [m for m in all_moves 
+                    if m["action"] == "move" and m["from"] == [x, y] 
+                    and is_own_score_cell(m["to"][0], m["to"][1], player, rows, cols, score_cols)]
+            
+            if sa_moves:
+                chosen = random.choice(sa_moves)
+                moves.append(chosen)
+                # Add rotate after moving to score area
+                moves.append({
+                    "action": "rotate", 
+                    "from": chosen["to"]
+                })
+            else:
+                # No direct score moves - rotate to horizontal
+                moves.append({
+                    "action": "rotate", 
+                    "from": [x, y]
+                })
+
+        # ---- Horizontal river pieces ----
+        elif piece.side == "river" and piece.orientation == "horizontal":
+            # Find moves that go directly to score area
+            sa_moves = [m for m in all_moves 
+                    if m["action"] == "move" and m["from"] == [x, y] 
+                    and is_own_score_cell(m["to"][0], m["to"][1], player, rows, cols, score_cols)]
+            
+            if sa_moves:
+                moves.extend(sa_moves)
+            else:
+                # Distance-based filtering for other moves
+                filtered = []
+                for m in all_moves:
+                    if m["from"] != [x, y] or m["action"] != "move":
+                        continue
+                    
+                    from_d = min_manhattan_to_score(x, y, player, rows, cols, score_cols)
+                    to_d = min_manhattan_to_score(m["to"][0], m["to"][1], player, rows, cols, score_cols)
+                    delta = to_d - from_d
+                    
+                    if delta < 0:
+                        # Distance decreased
+                        filtered.append((m, abs(delta)))
+                    elif delta <= 2:
+                        # Small distance increase
+                        filtered.append((m, 0))
+                
+                if filtered:
+                    # Sort by distance decrease (best first)
+                    filtered.sort(key=lambda t: (-t[1]))
+                    # Take top 2 moves
+                    top_moves = [mv for mv, _ in filtered[:2]]
+                    moves.extend(top_moves)
+
+            # Push moves - only the one that pushes opponent farthest
+            push_moves = [m for m in all_moves 
+                        if m["action"] == "push" and m["from"] == [x, y]]
+            
+            if push_moves:
+                # Find push that creates greatest distance between push start and end
+                best_push = max(push_moves, 
+                            key=lambda m: manhattan_distance(m["to"], m["pushed_to"]))
+                moves.append(best_push)
+
+    # Move ordering
+    moves_to_SA = [m for m in moves 
+                if m["action"] == "move" 
+                and is_own_score_cell(m["to"][0], m["to"][1], player, rows, cols, score_cols)]
+    
+    push_moves = [m for m in moves if m["action"] == "push"]
+    other_moves = [m for m in moves if m not in moves_to_SA and m not in push_moves]
+
+    # Sort push moves by how close they push opponent to their score area
+    def push_score(move):
+        return -min_manhattan_to_score(
+            move["pushed_to"][0], move["pushed_to"][1], 
+            opponent, rows, cols, score_cols
+        )
+    
+    push_moves.sort(key=push_score)
+    
+    # Final ordered list
+    ordered_moves = moves_to_SA + push_moves + other_moves
+    return ordered_moves
+
+def minimax_search(board, depth, alpha, beta, maximizing_player, player, rows, cols, score_cols, history):
+    """Alpha-beta minimax recursive search."""
+    if depth == 0:
+        return minimax_evaluate_board(board, player, rows, cols, score_cols), None
+
+    current_player = player if maximizing_player else get_opponent(player)
+    moves = selective_action_generation(board, current_player, rows, cols, score_cols)
+
+    if not moves:
+        return minimax_evaluate_board(board, player, rows, cols, score_cols), None
+
+    best_move = None
+
+    if maximizing_player:
+        max_eval = -math.inf
+        for move in moves:
+            success, new_board = simulate_move(board, move, current_player, rows, cols, score_cols)
+            if not success:
+                continue
+                
+            eval_val, _ = minimax_search(
+                new_board, depth - 1, alpha, beta, False, 
+                player, rows, cols, score_cols, history + [move]
+            )
+            
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_move = move
+                
+            alpha = max(alpha, eval_val)
+            if beta <= alpha:
+                break
+                
+        return max_eval, best_move
+
+    else:
+        min_eval = math.inf
+        for move in moves:
+            success, new_board = simulate_move(board, move, current_player, rows, cols, score_cols)
+            if not success:
+                continue
+                
+            eval_val, _ = minimax_search(
+                new_board, depth - 1, alpha, beta, True, 
+                player, rows, cols, score_cols, history + [move]
+            )
+            
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_move = move
+                
+            beta = min(beta, eval_val)
+            if beta <= alpha:
+                break
+                
+        return min_eval, best_move
+
+def get_minimax_move(board, player, rows, cols, score_cols, history, depth=2):
+    """Top-level helper to call minimax and prevent oscillations."""
+    # Import math if not already imported
+    import math
+    
+    eval_val, best_move = minimax_search(
+        board, depth, -math.inf, math.inf, True, 
+        player, rows, cols, score_cols, history
+    )
+
+    # Prevent oscillation: if best_move is same as two moves ago, use second best
+    if len(history) >= 2 and best_move and history[-2] == best_move:
+        all_moves = selective_action_generation(board, player, rows, cols, score_cols)
+        if len(all_moves) > 1:
+            # Find second best move
+            second_best_score = -math.inf
+            second_best_move = None
+            
+            for move in all_moves:
+                if move == best_move:
                     continue
-                if p.owner == player:
-                    d_own = min_manhattan_to_score(x, y, player, rows, cols, score_cols)
-                    d_opp = min_manhattan_to_score(x, y, opponent, rows, cols, score_cols)
-                    if d_own <= 2: my_close += 1
-                    if d_opp <= 2: my_to_opp += 1
-                else:
-                    d_opp = min_manhattan_to_score(x, y, opponent, rows, cols, score_cols)
-                    d_me  = min_manhattan_to_score(x, y, player, rows, cols, score_cols)
-                    if d_opp <= 2: opp_close += 1
-                    if d_me <= 2: opp_to_me += 1
-
-        score += my_close * 100
-        score -= opp_close * 100
-        score += my_to_opp * 50
-        score -= opp_to_me * 50
-
-        return score
-
-
-    def select_actions(board, player, rows, cols, score_cols):
-        """Selective action generator as per your detailed rules."""
-        moves = []
-        all_moves = generate_all_moves(board, player, rows, cols, score_cols)
-        opponent = get_opponent(player)
-
-        for m in all_moves:
-            fr = m.get("from")
-            if not fr: continue
-            x, y = fr
-
-            # region restrictions
-            if player == "circle" and y >= rows - 2: 
-                continue
-            if player == "square" and y <= 2:
-                continue
-
-            # skip if piece is in own SA
-            if is_own_score_cell(x, y, player, rows, cols, score_cols):
-                continue
-
-            p = board[y][x]
-            if not p or p.owner != player:
-                continue
-
-            # ---- stone ----
-            if p.side == "stone":
-                sa_moves = [mv for mv in all_moves if mv["action"] == "move" and mv["from"] == [x, y] and is_own_score_cell(mv["to"][0], mv["to"][1], player, rows, cols, score_cols)]
-                if sa_moves:
-                    chosen = random.choice(sa_moves)
-                    moves.append(chosen)
-                    moves.append({"action": "flip", "from": chosen["to"], "orientation": "horizontal"})
-                else:
-                    moves.append({"action": "flip", "from": [x, y], "orientation": "horizontal"})
-
-            # ---- river vertical ----
-            elif p.side == "river" and p.orientation == "vertical":
-                sa_moves = [mv for mv in all_moves if mv["action"] == "move" and mv["from"] == [x, y] and is_own_score_cell(mv["to"][0], mv["to"][1], player, rows, cols, score_cols)]
-                if sa_moves:
-                    chosen = random.choice(sa_moves)
-                    moves.append(chosen)
-                    moves.append({"action": "rotate", "from": chosen["to"]})
-                else:
-                    moves.append({"action": "rotate", "from": [x, y]})
-
-            # ---- river horizontal ----
-            elif p.side == "river" and p.orientation == "horizontal":
-                sa_moves = [mv for mv in all_moves if mv["action"] == "move" and mv["from"] == [x, y] and is_own_score_cell(mv["to"][0], mv["to"][1], player, rows, cols, score_cols)]
-                if sa_moves:
-                    moves.extend(sa_moves)
-                else:
-                    # distance-based filtering
-                    filtered = []
-                    for mv in all_moves:
-                        if mv["from"] != [x, y] or mv["action"] != "move":
-                            continue
-                        fr_d = min_manhattan_to_score(x, y, player, rows, cols, score_cols)
-                        to_d = min_manhattan_to_score(mv["to"][0], mv["to"][1], player, rows, cols, score_cols)
-                        delta = to_d - fr_d
-                        if delta < 0:
-                            filtered.append((mv, abs(delta)))
-                        elif delta <= 2:
-                            filtered.append((mv, 0))
-                    if filtered:
-                        filtered.sort(key=lambda t: (-t[1]))  # best distance decrease first
-                        top_moves = [mv for mv, _ in filtered[:2]]
-                        moves.extend(top_moves)
-
-                # push moves — only if pushes opponent farthest
-                push_moves = [mv for mv in all_moves if mv["action"] == "push" and mv["from"] == [x, y]]
-                if push_moves:
-                    best = max(push_moves, key=lambda mv: manhattan_distance(mv["to"], mv["pushed_to"]))
-                    moves.append(best)
-
-        # Move ordering
-        moves_to_SA = [m for m in moves if m["action"] == "move" and is_own_score_cell(m["to"][0], m["to"][1], player, rows, cols, score_cols)]
-        push_moves = [m for m in moves if m["action"] == "push"]
-        others = [m for m in moves if m not in moves_to_SA and m not in push_moves]
-
-        def push_score(mv):
-            return -min_manhattan_to_score(mv["pushed_to"][0], mv["pushed_to"][1], get_opponent(player), rows, cols, score_cols)
-
-        push_moves.sort(key=push_score)
-        ordered = moves_to_SA + push_moves + others
-        return ordered
-
-
-    def minimax(board, depth, alpha, beta, maximizing_player, player, rows, cols, score_cols, history):
-        """Alpha-beta minimax recursive search."""
-        if depth == 0:
-            return evaluate_board(board, player, rows, cols, score_cols), None
-
-        current_player = player if maximizing_player else get_opponent(player)
-        moves = select_actions(board, current_player, rows, cols, score_cols)
-
-        if not moves:
-            return evaluate_board(board, player, rows, cols, score_cols), None
-
-        best_move = None
-
-        if maximizing_player:
-            max_eval = -math.inf
-            for mv in moves:
-                success, new_board = simulate_move(board, mv, current_player, rows, cols, score_cols)
+                    
+                success, new_board = simulate_move(board, move, player, rows, cols, score_cols)
                 if not success:
                     continue
-                eval_val, _ = minimax(new_board, depth - 1, alpha, beta, False, player, rows, cols, score_cols, history + [mv])
-                if eval_val > max_eval:
-                    max_eval = eval_val
-                    best_move = mv
-                alpha = max(alpha, eval_val)
-                if beta <= alpha:
-                    break
-            return max_eval, best_move
+                    
+                move_score = minimax_evaluate_board(new_board, player, rows, cols, score_cols)
+                if move_score > second_best_score:
+                    second_best_score = move_score
+                    second_best_move = move
+            
+            if second_best_move:
+                best_move = second_best_move
 
-        else:
-            min_eval = math.inf
-            for mv in moves:
-                success, new_board = simulate_move(board, mv, current_player, rows, cols, score_cols)
-                if not success:
-                    continue
-                eval_val, _ = minimax(new_board, depth - 1, alpha, beta, True, player, rows, cols, score_cols, history + [mv])
-                if eval_val < min_eval:
-                    min_eval = eval_val
-                    best_move = mv
-                beta = min(beta, eval_val)
-                if beta <= alpha:
-                    break
-            return min_eval, best_move
-
-
-    def get_minimax_move(board, player, rows, cols, score_cols, history, depth=2):
-        """Top-level helper to call minimax and prevent oscillations."""
-        val, best_move = minimax(board, depth, -math.inf, math.inf, True, player, rows, cols, score_cols, history)
-
-        if len(history) >= 2 and best_move and history[-2] == best_move:
-            # oscillation detected, re-run with 2nd best
-            all_moves = select_actions(board, player, rows, cols, score_cols)
-            if len(all_moves) > 1:
-                best_move = all_moves[1]
-        return best_move
+    return best_move
 
 
 
