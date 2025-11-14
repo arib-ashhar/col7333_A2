@@ -99,7 +99,7 @@ def my_scoring_row(player: str, rows: int) -> int:
     The row where *I* must score (i.e., opponent's SA).
     circle scores at bottom; square scores at top.
     """
-    return top_score_row(rows) if player == "circle" else bottom_score_row(rows)
+    return top_score_row() if player == "circle" else bottom_score_row(rows)
 
 def guard_row_outside(player: str, rows: int) -> int:
     """
@@ -119,70 +119,99 @@ def guard_row_outside(player: str, rows: int) -> int:
 def get_river_flow_path(board: List[List[Any]], start_x: int, start_y: int, 
                        player: str, rows: int, cols: int) -> List[Tuple[int, int]]:
     """
-    Get all possible destinations when moving along a river's flow direction.
-    This handles the sliding movement along rivers.
+    Enumerate all legal destinations reachable by stepping ONTO the river at (start_x,start_y)
+    from one of its 4-neighbours, then riding along FLOW in BOTH directions, chaining through
+    empties and further rivers, without entering the opponent’s SA, and stopping before stones.
+
+    Notes:
+    - Works no matter from which side you step onto the river (left/right/up/down).
+    - Collects every empty cell along the way and the coordinates of encountered rivers (you can
+      ‘land’ on a river too, per assignment’s ride semantics).
     """
-    destinations = []
-    visited = set()
-    
-    def explore_direction(dx: int, dy: int):
-        """Explore movement in one direction along rivers."""
-        x, y = start_x + dx, start_y + dy
-        
-        while in_bounds(x, y, rows, cols):
-            if (x, y) in visited:
-                break
-            visited.add((x, y))
-            
-            # Stop if entering opponent's scoring area
-            if is_opponent_score_area(x, y, player, rows, cols):
-                break
-                
-            cell = board[y][x]
-            
-            # Empty cell - valid destination
-            if cell is None:
-                destinations.append((x, y))
-                x += dx
-                y += dy
-                continue
-                
-            # Hit a stone - stop
-            if cell.side == "stone":
-                break
-                
-            # Hit another river - change direction and continue
-            if cell.side == "river":
-                if cell.orientation == "horizontal":
-                    # Change to horizontal movement
-                    new_dx = 1 if dx > 0 else -1 if dx < 0 else (1 if x > start_x else -1)
-                    new_dy = 0
-                else:  # vertical
-                    # Change to vertical movement
-                    new_dx = 0
-                    new_dy = 1 if dy > 0 else -1 if dy < 0 else (1 if y > start_y else -1)
-                
-                # Continue with new direction
-                dx, dy = new_dx, new_dy
-                x += dx
-                y += dy
-            else:
-                break
-    
-    # Get starting river piece
+
+    # sanity: must start on a river cell
+    if not in_bounds(start_x, start_y, rows, cols):
+        return []
     start_piece = board[start_y][start_x]
     if not start_piece or start_piece.side != "river":
-        return destinations
-    
-    # Explore both flow directions
-    if start_piece.orientation == "horizontal":
-        explore_direction(1, 0)   # Right
-        explore_direction(-1, 0)  # Left
-    else:  # vertical
-        explore_direction(0, 1)   # Down
-        explore_direction(0, -1)  # Up
-    
-    return destinations
+        return []
+
+    # Helpers
+    def is_opp_SA(x, y):
+        return is_opponent_score_area(x, y, player, rows, cols)
+
+    def add_if_new(lst, seen, p):
+        if p not in seen:
+            seen.add(p)
+            lst.append(p)
+
+    # From (start_x,start_y), we need to ride ALONG the river’s allowed directions,
+    # but we must allow entering this river from any side. The flow directions are
+    # determined by the *river you are currently on*, not by the approach direction.
+    def flow_dirs_at(x, y):
+        piece = board[y][x]
+        if not piece or piece.side != "river":
+            return []
+        # horizontal rivers allow left/right; vertical allow up/down
+        return [(-1, 0), (1, 0)] if piece.orientation == "horizontal" else [(0, -1), (0, 1)]
+
+    landings: List[Tuple[int, int]] = []
+    seen_landings = set()
+
+    # We’ll DFS over the “river graph”: each node = a river cell.
+    # From a river node, we “walk” along each flow direction:
+    #   - keep adding empties (each is a legal landing)
+    #   - if another river is encountered, that river is a legal landing,
+    #     and we recurse from that river node.
+    stack = [(start_x, start_y)]
+    seen_rivers = set()
+
+    # stepping ONTO the first river: landing allowed
+    add_if_new(landings, seen_landings, (start_x, start_y))
+
+    while stack:
+        rx, ry = stack.pop()
+        if (rx, ry) in seen_rivers:
+            continue
+        seen_rivers.add((rx, ry))
+
+        for dx, dy in flow_dirs_at(rx, ry):
+            x, y = rx + dx, ry + dy
+
+            # block if immediately out-of-bounds or into opponent SA
+            if not in_bounds(x, y, rows, cols) or is_opp_SA(x, y):
+                # you can still "land" on the current river (already added)
+                continue
+
+            # Walk straight along this direction
+            while True:
+                if not in_bounds(x, y, rows, cols) or is_opp_SA(x, y):
+                    break
+
+                cell = board[y][x]
+
+                # If we hit a stone, we cannot pass; the previous square (empty/river) was already added.
+                if cell is not None and getattr(cell, "side", None) == "stone":
+                    break
+
+                if cell is None:
+                    # empty squares along the ride are all legal landings
+                    add_if_new(landings, seen_landings, (x, y))
+                    x, y = x + dx, y + dy
+                    continue
+
+                # If we meet a river, we can land on it and then branch from it later
+                if getattr(cell, "side", None) == "river":
+                    add_if_new(landings, seen_landings, (x, y))
+                    # Recurse from this river node (to explore its flow directions)
+                    if (x, y) not in seen_rivers:
+                        stack.append((x, y))
+                    break
+
+                # Any other unexpected content → stop
+                break
+
+    return landings
 
 # ==================== PUSH MOVEMENT GENERATION ====================
 
@@ -311,11 +340,12 @@ def generate_regular_moves(board: List[List[Any]], piece_x: int, piece_y: int,
             # River movement - slide along river flow
             river_destinations = get_river_flow_path(board, target_x, target_y, player, rows, cols)
             for dest_x, dest_y in river_destinations:
-                moves.append({
-                    "action": "move",
-                    "from": [piece_x, piece_y],
-                    "to": [dest_x, dest_y]
-                })
+                if not is_opponent_score_area(dest_x, dest_y, player, rows, cols):
+                    moves.append({
+                        "action": "move",
+                        "from": [piece_x, piece_y],
+                        "to": [dest_x, dest_y]
+                    })
     
     return moves
 
@@ -383,6 +413,7 @@ def generate_flip_moves(board: List[List[Any]], piece_x: int, piece_y: int) -> L
         })
     
     return flips
+
 
 def generate_rotate_moves(board: List[List[Any]], piece_x: int, piece_y: int) -> List[Dict[str, Any]]:
     """Generate rotate moves for a river piece."""
