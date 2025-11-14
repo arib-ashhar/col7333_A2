@@ -60,6 +60,28 @@ def get_opponent(player: str) -> str:
     """Get the opponent player identifier."""
     return "square" if player == "circle" else "circle"
 
+# ---------- helpers for "home SA" and guard row (outside SA) ----------
+def home_sa_row(player: str, rows: int) -> int:
+    """
+    Player's OWN scoring area row (the goal they defend).
+    - Square defends TOP SA.
+    - Circle defends BOTTOM SA.
+    """
+    return top_score_row() if player == "square" else bottom_score_row(rows)
+
+def guard_row_outside(player: str, rows: int) -> int:
+    """
+    Row where horizontal guards sit: ONE CELL OUTSIDE (away from the center/opponent)
+    of the player's OWN scoring area.
+    - If top SA -> guard row = SA - 1
+    - If bottom SA -> guard row = SA + 1
+    """
+    sa = home_sa_row(player, rows)
+    if sa == top_score_row():
+        return sa - 1  # just above the top SA
+    else:
+        return sa + 1  # just below the bottom SA
+
 # ==================== MOVE GENERATION HELPERS ====================
 
 def get_valid_moves_for_piece(board, x: int, y: int, player: str, rows: int, cols: int, score_cols: List[int]) -> List[Dict[str, Any]]:
@@ -302,10 +324,10 @@ class StudentAgent(BaseAgent):
                 # Your precomputed defensive opener (already implemented by you)
                 self._def_setup_plan = self.get_initial_defense_moves(rows, cols)
                 self._def_setup_idx = 0
-                if self._def_setup_plan:
-                    print(f"[{self.player}] Initial DEF plan ({rows}x{cols}, steps={len(self._def_setup_plan)}):")
-                    for i, m in enumerate(self._def_setup_plan, 1):
-                        print(f"{i:02d}. {m}")
+                # if self._def_setup_plan:
+                    # print(f"[{self.player}] Initial DEF plan ({rows}x{cols}, steps={len(self._def_setup_plan)}):")
+                    # for i, m in enumerate(self._def_setup_plan, 1):
+                        # print(f"{i:02d}. {m}")
 
             # Play next applicable scripted defense move; skip stale ones
             while self._def_setup_idx < len(self._def_setup_plan):
@@ -320,6 +342,7 @@ class StudentAgent(BaseAgent):
 
         # 2) HIGH PRIORITY: REACTIVE DEFENSE (includes restores / pushes / alignments)
         dm = self.get_defensive_move(board, rows, cols, score_cols)
+        #print("defensive move: ", dm)
         if dm:
             return dm
 
@@ -335,9 +358,9 @@ class StudentAgent(BaseAgent):
                     self._atk_plan = []
                 self._atk_idx = 0
                 if self._atk_plan and not self._atk_printed:
-                    print(f"[{self.player}] Initial ATK plan ({rows}x{cols}, steps={len(self._atk_plan)}):")
-                    for i, m in enumerate(self._atk_plan, 1):
-                        print(f"{i:02d}. {m}")
+                    # print(f"[{self.player}] Initial ATK plan ({rows}x{cols}, steps={len(self._atk_plan)}):")
+                    # for i, m in enumerate(self._atk_plan, 1):
+                        # print(f"{i:02d}. {m}")
                     self._atk_printed = True
 
             # While there are scripted attack moves left
@@ -355,7 +378,7 @@ class StudentAgent(BaseAgent):
                         return am
                     else:
                         # TODO: attack step not currently feasible; handle re-planning/escalation later.
-                        print("Attack Move Not possible, invoking minimax =", am)
+                        # print("Attack Move Not possible, invoking minimax =", am)
                         if not hasattr(self, "move_history"):
                             self.move_history = []
                         best_move = get_minimax_move(board, self.player, rows, cols, score_cols, self.move_history)
@@ -647,184 +670,227 @@ class StudentAgent(BaseAgent):
         p = board[fy][fx]
         return bool(p and p.owner == player)
 
-    
 
-    # ------ Defense mechanism for guarding rivers ---------------
+    # ---------- layout: two horizontal guard cells outside our SA ----------
     def init_defense_layout(self, board, rows, cols, score_cols):
         """
-        Decide guard placement based on board size and player.
-        - Horizontal guards sit one row beyond the SA (toward the opponent).
-        * circle: SA at top -> guards on sa_row+1
-        * square: SA at bottom -> guards on sa_row-1
-        - We choose alternating SA cells:
-            small/medium (k=4/5): indices [0,2]  (2 guards)
-            large (k=6):          indices [0,2,4] (3 guards)
-        - Also return side vertical guard columns (optional to use).
+        Place/track two horizontal guard cells ONE ROW OUTSIDE our OWN SA.
+        - Square defends TOP SA (guards on row = top SA - 1)
+        - Circle defends BOTTOM SA (guards on row = bottom SA + 1)
+        - Choose the inner pair of SA columns when possible (len>=4),
+        otherwise best available.
         """
-        sa_row = top_score_row() if self.player == "circle" else bottom_score_row(rows)
-        k = len(score_cols)
-        k = min(k, 6)
+        sa_row = home_sa_row(self.player, rows)
+        guard_row = guard_row_outside(self.player, rows)
         sa_cols_sorted = sorted(score_cols)
 
-        # horizontal guard row (front line)
-        guard_row = sa_row + 1 if self.player == "circle" else sa_row - 1
-
-        # which SA columns to guard (alternating)
-        if k <= 5:
-            idxs = [0, 2] if k >= 3 else [0, 1]  # fallback if weird k
+        # Choose guard columns:
+        if len(sa_cols_sorted) >= 4:
+            # Inner pair (middle two) defend best for 4+ width SAs
+            guard_cols = [sa_cols_sorted[1], sa_cols_sorted[-2]]
+        elif len(sa_cols_sorted) == 3:
+            # One central; duplicate to try to keep two guards if both spots get used
+            guard_cols = [sa_cols_sorted[1], sa_cols_sorted[1]]
+        elif len(sa_cols_sorted) == 2:
+            guard_cols = [sa_cols_sorted[0], sa_cols_sorted[1]]
+        elif len(sa_cols_sorted) == 1:
+            guard_cols = [sa_cols_sorted[0], sa_cols_sorted[0]]
         else:
-            idxs = [0, 2, 4]
+            guard_cols = []
 
-        horiz_guards = [(sa_cols_sorted[i], guard_row) for i in idxs if 0 <= i < k]
-
-        # optional side-guards (vertical) just outside SA
-        left_col  = sa_cols_sorted[0] - 1
-        right_col = sa_cols_sorted[-1] + 1
-        side_guards = []
-        if 0 <= left_col < cols:
-            side_guards.append((left_col, guard_row))   # vertical
-        if 0 <= right_col < cols:
-            side_guards.append((right_col, guard_row))  # vertical
+        horiz_guards = [(c, guard_row) for c in guard_cols if 0 <= c < cols and 0 <= guard_row < rows]
 
         self.defense = {
-            "sa_row": sa_row,
-            "horiz_guards": horiz_guards,   # expect horizontal rivers here
-            "side_guards": side_guards,     # expect vertical rivers here
+            "sa_row": sa_row,                    # our OWN SA row (goal to defend)
+            "guard_row": guard_row,              # row just outside SA
+            "horiz_guards": horiz_guards,        # expected horizontal rivers
         }
         if not hasattr(self, "restore_queue"):
             self.restore_queue = deque()
 
+        # print(f"[DEF:init] me={self.player} sa_row={sa_row} guard_row={guard_row} sa_cols={sa_cols_sorted} guards={horiz_guards}")
 
+
+    # ---------- simple adjacent-push defense with queued restore ----------
     def get_defensive_move(self, board, rows, cols, score_cols):
         """
-        Advanced zone-based defense logic.
+        Defensive logic (robust to guards moving from home):
 
-        - Side guards (vertical) are untouched.
-        - Horizontal guards (below/above SA) protect SA cells in zones of 3 (or remaining).
-        - Each guard handles intrusions (stones/rivers) within its assigned SA zone.
+        • Square defends TOP SA:    guard_row = top_SA_row - 1
+        • Circle defends BOTTOM SA: guard_row = bottom_SA_row + 1
+
+        Homes (for 4-wide SA): (sa_cols[0], guard_row) and (sa_cols[-2], guard_row)
+        We *track homes*, but every turn we *scan the guard_row* over all SA columns
+        to find our *current guard positions* (wherever they currently are).
+
+        Priority:
+        1) Execute queued restore if applicable (else don't pop; return None).
+        2) Ensure current guards we own are horizontal rivers (flip if needed).
+        3) If adjacent (left/right) IN SA COLUMNS there is an OPPONENT **STONE**,
+            push it horizontally as far as possible, then queue flip-back + move-back to home.
+        4) If on the row just *between SA and guards* there’s any OPPONENT **RIVER**
+            in a scoring column, move the *nearest current guard* to that column (if free).
         """
+        # ---------- layout & constants ----------
         if self.defense is None:
             self.init_defense_layout(board, rows, cols, score_cols)
 
-        # 1️⃣ Any pending restore action first
-        if self.restore_queue:
-            return self.restore_queue.popleft()
-
-        sa_row = self.defense["sa_row"]
-        horiz_guards = list(self.defense.get("horiz_guards", []))
-        me = self.player
+        me  = self.player
         opp = get_opponent(me)
 
-        # guard row location
-        guard_row = sa_row + 1 if me == "circle" else sa_row - 1
+        # SA rows by side (remember: each side defends ITS OWN SA)
+        sa_row = top_score_row() if me == "square" else bottom_score_row(rows)
+        guard_row = sa_row - 1 if me == "square" else sa_row + 1
+
         sa_cols_sorted = sorted(score_cols)
-        k = len(sa_cols_sorted)
+        sa_cols_set = set(sa_cols_sorted)
 
-        # ---- Build ZONES each guard protects (3 columns or remainder) ----
-        zone_map = {}  # guard (gx,gy) → dict(zone_cols, center_col)
-        if k >= 4:
-            if k == 4:
-                zones = [sa_cols_sorted[0:3], sa_cols_sorted[3:4]]
-            elif k == 5:
-                zones = [sa_cols_sorted[0:3], sa_cols_sorted[3:5]]
-            else:  # k==6 or more
-                zones = [sa_cols_sorted[0:3], sa_cols_sorted[3:6]]
+        # define *home* columns (as you requested)
+        if len(sa_cols_sorted) >= 4:
+            guard_homes = [(sa_cols_sorted[0], guard_row), (sa_cols_sorted[-2], guard_row)]
+        elif len(sa_cols_sorted) >= 2:
+            guard_homes = [(sa_cols_sorted[0], guard_row), (sa_cols_sorted[-1], guard_row)]
         else:
-            zones = [sa_cols_sorted]
+            guard_homes = [(sa_cols_sorted[0], guard_row)]
 
-        for i, (gx, gy) in enumerate(horiz_guards):
-            if i < len(zones):
-                zone_cols = zones[i]
-                center_col = zone_cols[len(zone_cols)//2]
-                zone_map[(gx, gy)] = {"zone_cols": zone_cols, "center_col": center_col}
+        # stash in defense for reference/prints
+        self.defense["sa_row"] = sa_row
+        self.defense["guard_row"] = guard_row
+        self.defense["guard_homes"] = guard_homes
 
-        # helper: can push destination accept the piece?
-        def ok_push_dest(x, y, pushed_player):
-            if not in_bounds(x, y, rows, cols):
-                return False
-            if board[y][x] is not None:
-                return False
-            return not is_opponent_score_cell(x, y, pushed_player, rows, cols, score_cols)
+        # print(f"[DEF] me={me} sa_row={sa_row} guard_row={guard_row} sa_cols={sa_cols_sorted} homes={guard_homes}")
 
-        def queue_restore(gx, gy, center_col):
-            # restore flip and move back
-            self.restore_queue.append({"action": "flip", "from": [gx, gy], "orientation": "horizontal"})
-            if gx != center_col:
-                self.restore_queue.append({"action": "move", "from": [gx, gy], "to": [center_col, guard_row]})
+        # ---------- helpers ----------
+        def inb(x, y): 
+            return 0 <= x < cols and 0 <= y < rows
 
-        # 2️⃣ Restore guards if they are our stones or misoriented rivers
-        for (gx, gy), zone in zone_map.items():
-            if not in_bounds(gx, gy, rows, cols):
-                continue
+        def ok_push_dest(x, y, pushed_owner):
+            if not inb(x, y): return False
+            if board[y][x] is not None: return False
+            return not is_opponent_score_cell(x, y, pushed_owner, rows, cols, score_cols)
+
+        def is_applicable(move):
+            if hasattr(self, "check_if_move_applicable"):
+                return self.check_if_move_applicable(board, me, move)
+            fr = move.get("from")
+            if not fr: return True
+            fx, fy = fr
+            return inb(fx, fy) and board[fy][fx] is not None and getattr(board[fy][fx], "owner", None) == me
+
+        def nearest_home(x_now):
+            # choose the home with minimum |x_now - home_x|
+            hx, hy = min(guard_homes, key=lambda h: abs(h[0] - x_now))
+            return hx, hy
+
+        def queue_restore(cur_x, cur_y):
+            # after push our guard is a STONE at (cur_x,cur_y). Flip back to horizontal river, then go home.
+            self.restore_queue.append({"action": "flip", "from": [cur_x, cur_y], "orientation": "horizontal"})
+            hx, hy = nearest_home(cur_x)
+            if (cur_x, cur_y) != (hx, hy):
+                self.restore_queue.append({"action": "move", "from": [cur_x, cur_y], "to": [hx, hy]})
+            # print(f"[DEF] queued restore: flip@{(cur_x,cur_y)} → move→{(hx,hy)}")
+
+        # ---------- if there is any todo left in the queue make those moves ----------
+        if self.restore_queue:
+            nxt = self.restore_queue[0]
+            if is_applicable(nxt):
+                # print("[DEF] executing queued restore:", nxt)
+                return self.restore_queue.popleft()
+            else:
+                # print("[DEF] queued restore NOT applicable yet; keep queued:", nxt)
+                return None
+
+        # ---------- find all the guards positions ----------
+        current_guards = []
+        if 0 <= guard_row < rows:
+            for cx in sa_cols_sorted:
+                p = board[guard_row][cx]
+                dbg = "none" if p is None else f"{p.owner}:{p.side}:{getattr(p,'orientation',None)}"
+                # print(f"[DEF] scan guard_row cell {(cx,guard_row)} -> {dbg}")
+                if p and p.owner == me:
+                    # This is one of "our guards" (could be temporarily a stone after push)
+                    current_guards.append((cx, guard_row))
+
+        # print(f"[DEF] current_guards={current_guards}")
+
+        # ---------- IF any guards are not in horizontaal orientation rotate them ----------
+        for (gx, gy) in current_guards:
             p = board[gy][gx]
-            if p and p.owner == me and (p.side != "river" or p.orientation != "horizontal"):
+            if p and (p.side != "river" or p.orientation != "horizontal"):
+                # print("[DEF] flipping current guard to horizontal river at", (gx, gy))
                 return {"action": "flip", "from": [gx, gy], "orientation": "horizontal"}
 
-        # 3️⃣ Intruder (opponent stone) detection and push inside zone
-        for (gx, gy), zone in zone_map.items():
-            if not in_bounds(gx, gy, rows, cols):
+        # ---------- Push away the stones ----------
+        for (gx, gy) in current_guards:
+            p = board[gy][gx]
+            if not (p and p.owner == me and p.side == "river" and p.orientation == "horizontal"):
+                # can only push from a horizontal river; otherwise flip stage will handle above
                 continue
-            guard_piece = board[gy][gx]
-            if not (guard_piece and guard_piece.owner == me and guard_piece.side == "river" and guard_piece.orientation == "horizontal"):
-                continue
 
-            zone_cols = zone["zone_cols"]
-            center_col = zone["center_col"]
-
-            for cx in zone_cols:
-                # check SA row and guard row for enemy pieces
-                for ry in (sa_row, guard_row):
-                    if not in_bounds(cx, ry, rows, cols):
-                        continue
-                    target = board[ry][cx]
-                    if not target or target.owner != opp:
-                        continue
-
-                    # choose push direction away from center
-                    dx = 1 if cx >= center_col else -1
-                    tx, ty = gx, gy
-                    pushed_from = (cx, ry)
-                    px, py = cx + dx, ry
-                    last_ok = None
-                    while in_bounds(px, py, rows, cols) and ok_push_dest(px, py, target.owner):
-                        last_ok = (px, py)
-                        px += dx
-                    if last_ok is None:
-                        px, py = cx + dx, ry
-                        if not ok_push_dest(px, py, target.owner):
-                            continue
-                        pushed_to = (px, py)
-                    else:
-                        pushed_to = last_ok
-
-                    move = {
-                        "action": "push",
-                        "from": [tx, ty],
-                        "to": [pushed_from[0], pushed_from[1]],
-                        "pushed_to": [pushed_to[0], pushed_to[1]],
-                    }
-                    queue_restore(cx, ry, center_col)
-                    return move
-
-        # 4️⃣ Opponent’s vertical river check (just above/below SA)
-        check_row = sa_row - 1 if me == "circle" else sa_row + 1
-        for (gx, gy), zone in zone_map.items():
-            zone_cols = zone["zone_cols"]
-            center_col = zone["center_col"]
-            for cx in zone_cols:
-                if not in_bounds(cx, check_row, rows, cols):
+            for dx in (-1, 1):
+                nx, ny = gx + dx, gy
+                if nx not in sa_cols_set:
+                    continue  # protect only SA columns
+                if not inb(nx, ny):
                     continue
-                p = board[check_row][cx]
-                if p and p.owner == opp and p.side == "river" and p.orientation == "vertical":
-                    # if our guard not already there, move under that column
-                    if gx != cx or gy != guard_row:
-                        return {"action": "move", "from": [gx, gy], "to": [cx, guard_row]}
-                    # once there, queue move back after a turn
-                    queue_restore(gx, gy, center_col)
-                    return None
+                t = board[ny][nx]
+                if not (t and t.owner == opp and t.side == "stone"):
+                    continue  # push is only for stones
 
-        # 5️⃣ Nothing to do
+                # print(f"[DEF] intruding OPP STONE at {(nx,ny)} — pushing dx={dx}")
+
+                # farthest legal destination along dx
+                px, py = nx + dx, ny
+                last_ok = None
+                while inb(px, py) and ok_push_dest(px, py, t.owner):
+                    last_ok = (px, py)
+                    px += dx
+                if last_ok is None:
+                    px, py = nx + dx, ny
+                    if not ok_push_dest(px, py, t.owner):
+                        # print("[DEF] no legal destination to push; skip")
+                        continue
+                    pushed_to = (px, py)
+                else:
+                    pushed_to = last_ok
+
+                push_move = {
+                    "action": "push",
+                    "from": [gx, gy],
+                    "to": [nx, ny],
+                    "pushed_to": [pushed_to[0], pushed_to[1]],
+                }
+                # print("[DEF] issuing PUSH:", push_move)
+                # after push, our river becomes a stone at (nx,ny) → queue restore back to nearest home
+                queue_restore(nx, ny)
+                return push_move
+
+        # ---------- If opponent river has entered from behind shift nearest guard to that column ----------
+        scan_row = guard_row - 1  # row between SA and guards
+        if 0 <= scan_row < rows and current_guards:
+            threat_cols = []
+            for cx in sa_cols_sorted:
+                t = board[scan_row][cx]
+                if t and t.owner == opp and t.side == "river":
+                    threat_cols.append(cx)
+
+            if threat_cols:
+                # choose the nearest current guard to each threatened column (first viable move wins)
+                for cx in threat_cols:
+                    # pick nearest guard (by x-distance)
+                    g = min(current_guards, key=lambda gpos: abs(gpos[0] - cx))
+                    gx, gy = g
+                    # only move if destination free
+                    if board[guard_row][cx] is None:
+                        mv = {"action": "move", "from": [gx, gy], "to": [cx, guard_row]}
+                        # print(f"[DEF] river seen at {(cx,scan_row)} → shift guard {g} → {(cx,guard_row)}")
+                        return mv
+                    # else:
+                        # print(f"[DEF] wanted to shift to {(cx,guard_row)} but occupied; skipping")
+
+        # print("[DEF] no defensive action")
         return None
+
 
     # -------------------- MINIMAX WITH ALPHA-BETA --------------------
     def manhattan_distance(a, b):
