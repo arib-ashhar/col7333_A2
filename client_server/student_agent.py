@@ -466,6 +466,8 @@ class StudentAgent(BaseAgent):
         self.move_history = []
         self.total_moves = 0
         self.total_time = None
+        self.H1 = None
+        self.H2 = None
 
     # -------------------- PUBLIC: CHOOSE --------------------
     def choose(
@@ -495,6 +497,12 @@ class StudentAgent(BaseAgent):
                 search_depth = 2
             else:
                 search_depth = 1
+        
+        # check stalemate
+        if self.update_and_check_stalemate(board):
+            m = self.endgame_force_flip_in_opp_sa(board, rows, cols, score_cols)
+            if m:
+                return _return(m)
         
         # if only 5 seconds are left then flip the rivers already inside the SA
         if self.total_time and (self.total_time - float(current_player_time)) <= 5.0:
@@ -581,6 +589,28 @@ class StudentAgent(BaseAgent):
         if all_moves:
             return _return(random.choice(all_moves))
         return None
+    
+    def update_and_check_stalemate(self, board: List[List[Any]]) -> bool:
+        """
+        Update rolling board hashes (H1,H2) and detect stalemate:
+        - Compute H3 = hash(board)
+        - If H1 == H3 -> stalemate (position repeated with a 1-move interval)
+        - Shift: H1 = H2; H2 = H3
+        Returns:
+        True if stalemate detected, else False.
+        Note:
+        Expects a function `board_to_hash(board)` to be available.
+        """
+        # Compute current hash
+        h3 = board_to_hash(board)
+
+        # Check stalemate against H1 (two plies back)
+        is_stalemate = (self.H1 is not None and h3 == self.H1)
+
+        # Slide the window: H1 <- H2, H2 <- H3
+        self.H1, self.H2 = self.H2, h3
+
+        return is_stalemate
 
     # -------------------- DEFENSE: get the precomputed defense moves based on piece type and board size --------------------
     def get_initial_defense_moves(self, rows: int, cols: int) -> List[Dict[str, Any]]:
@@ -1393,6 +1423,43 @@ def get_minimax_move(board, player, rows, cols, score_cols, history, depth: int)
                 best_move = second_best_move
     return best_move
 
+def board_to_hash(board: List[List[Optional[Any]]]) -> str:
+    """
+    Convert current board to a stable hash-like string for stalemate detection.
+    - Empty cells -> "_"
+    - Pieces -> "owner_side_orientation"
+      e.g., "circle_stone_None" or "square_river_horizontal"
+    Works whether a piece is a dict or an object with attributes.
+    """
+    def get_field(cell, key, default=None):
+        # Support both object attrs and dict keys
+        if cell is None:
+            return default
+        if isinstance(cell, dict):
+            return cell.get(key, default)
+        return getattr(cell, key, default)
+
+    rows_out = []
+    for row in board:
+        row_tokens = []
+        for cell in row:
+            if cell is None:
+                row_tokens.append("_")
+                continue
+
+            owner = get_field(cell, "owner", "unknown")
+            side = get_field(cell, "side", "unknown")
+
+            # orientation may not exist for stones; keep "None" to match your format
+            orientation = get_field(cell, "orientation", None)
+            if orientation is None:
+                orientation_str = "None"
+            else:
+                orientation_str = str(orientation)
+
+            row_tokens.append(f"{owner}_{side}_{orientation_str}")
+        rows_out.append("|".join(row_tokens))
+    return "||".join(rows_out)
 
 
 # ==================== TESTING HELPERS ====================
