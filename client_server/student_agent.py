@@ -465,6 +465,7 @@ class StudentAgent(BaseAgent):
         self.restore_queue = deque() 
         self.move_history = []
         self.total_moves = 0
+        self._total_time = None
 
     # -------------------- PUBLIC: CHOOSE --------------------
     def choose(
@@ -482,6 +483,18 @@ class StudentAgent(BaseAgent):
             if m is not None:
                 self.total_moves += 1
             return m
+        
+        if self._total_time is None:
+            self._total_time = max(0.0, float(current_player_time))
+        
+        # set minimax depth dynamically based on time left
+        search_depth = 1
+        if self._total_time and self._total_time > 0.0:
+            # If current remaining time > 50% of total_time, depth 2, else depth 1
+            if float(current_player_time) > 0.4 * self._total_time:
+                search_depth = 2
+            else:
+                search_depth = 1
 
         # 0B) ABSOLUTE HIGHEST PRIORITY when move count is large
         # Flip any of *my* rivers already sitting in opponent SA to stones.
@@ -553,8 +566,7 @@ class StudentAgent(BaseAgent):
                 #     print("Attack Move Not possible, invoking minimax =", am)
 
         # 4) Fallback: minimax else random
-        print("onto mini max")
-        best_move = get_minimax_move(board, self.player, rows, cols, score_cols, self.move_history)
+        best_move = get_minimax_move(board, self.player, rows, cols, score_cols, self.move_history, search_depth)
         if best_move:
             self.move_history.append(best_move)
             return _return(best_move)
@@ -1286,7 +1298,6 @@ def selective_action_generation(board, player, rows, cols, score_cols):
     return ordered_moves
 
 def minimax_search(board, depth, alpha, beta, maximizing_player, player, rows, cols, score_cols, history):
-    print(3)
     """Alpha-beta minimax recursive search."""
     if depth == 0:
         return minimax_evaluate_board(board, player, rows, cols, score_cols), None
@@ -1343,10 +1354,9 @@ def minimax_search(board, depth, alpha, beta, maximizing_player, player, rows, c
                 
         return min_eval, best_move
 
-def get_minimax_move(board, player, rows, cols, score_cols, history, depth=2):
+def get_minimax_move(board, player, rows, cols, score_cols, history, depth: int):
     """Top-level helper to call minimax and prevent oscillations."""
     # Import math if not already imported
-    print(1)
     eval_val, best_move = minimax_search(
         board, depth, -math.inf, math.inf, True, 
         player, rows, cols, score_cols, history
@@ -1375,7 +1385,6 @@ def get_minimax_move(board, player, rows, cols, score_cols, history, depth=2):
             
             if second_best_move:
                 best_move = second_best_move
-    print(2)
     return best_move
 
 
