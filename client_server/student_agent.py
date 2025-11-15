@@ -465,7 +465,7 @@ class StudentAgent(BaseAgent):
         self.restore_queue = deque() 
         self.move_history = []
         self.total_moves = 0
-        self._total_time = None
+        self.total_time = None
 
     # -------------------- PUBLIC: CHOOSE --------------------
     def choose(
@@ -484,17 +484,23 @@ class StudentAgent(BaseAgent):
                 self.total_moves += 1
             return m
         
-        if self._total_time is None:
-            self._total_time = max(0.0, float(current_player_time))
+        if self.total_time is None:
+            self.total_time = max(0.0, float(current_player_time))
         
         # set minimax depth dynamically based on time left
         search_depth = 1
-        if self._total_time and self._total_time > 0.0:
+        if self.total_time and self.total_time > 0.0:
             # If current remaining time > 50% of total_time, depth 2, else depth 1
-            if float(current_player_time) > 0.4 * self._total_time:
+            if float(current_player_time) > 0.4 * self.total_time:
                 search_depth = 2
             else:
                 search_depth = 1
+        
+        # if only 5 seconds are left then flip the rivers already inside the SA
+        if self.total_time and (self.total_time - float(current_player_time)) <= 5.0:
+            m = self.endgame_force_flip_in_opp_sa(board, rows, cols, score_cols)
+            if m:
+                return _return(m)
 
         # 0B) ABSOLUTE HIGHEST PRIORITY when move count is large
         # Flip any of *my* rivers already sitting in opponent SA to stones.
