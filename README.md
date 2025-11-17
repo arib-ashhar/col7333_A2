@@ -3,7 +3,7 @@
 This repository contains the code for Adversarial agent and game Engine for the River and Stones.
 
 Here is the demo of agent playing against another adversarial agent:
-
+![gif](./river_stones_gameplay.gif)
 
 
 ## Details
@@ -75,7 +75,7 @@ General Movement
 
 ### 🔄 Rotating & Flipping
 
-####Rotate River (R):
+#### Rotate River (R):
  - Rotate one of your Rivers 90° (horizontal ↔ vertical). Cannot rotate by 180° or skip rotation.
 
 #### Flip Piece (F):
